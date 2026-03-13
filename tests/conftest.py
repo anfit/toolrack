@@ -21,12 +21,14 @@ def repo(tmp_path, monkeypatch):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     registry = tmp_path / ".toolrack"
+    cache = tmp_path / ".toolrack.cache.json"
 
     monkeypatch.setattr(cli, "REPO_ROOT", str(tmp_path))
     monkeypatch.setattr(cli, "SCRIPTS_ROOT", str(scripts))
     monkeypatch.setattr(cli, "REGISTRY_FILE", str(registry))
+    monkeypatch.setattr(cli, "CACHE_FILE", str(cache))
 
-    return {"root": tmp_path, "scripts": scripts, "registry": registry}
+    return {"root": tmp_path, "scripts": scripts, "registry": registry, "cache": cache}
 
 
 @pytest.fixture()

@@ -9,6 +9,7 @@ Covers:
   - Command-tree building: groups, aliases, --help content, env section, choices
 """
 import os
+import json
 import pytest
 
 import toolrack.cli as cli
@@ -342,6 +343,15 @@ class TestRegister:
         assert len(registry) == 1
         assert "\\" not in registry[0]
 
+    def test_register_refreshes_command_cache(self, repo, runner, make_script, make_sidecar, monkeypatch):
+        monkeypatch.chdir(repo["root"])
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "ok"})
+        result = runner.invoke(cli.cli, ["core", "register", "scripts/github/check_review.py"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(repo["cache"].read_text(encoding="utf-8"))
+        assert payload["entries"][0]["entry"] == "scripts/github/check_review.py"
+
 
 # ===========================================================================
 # auto-register command
@@ -522,7 +532,8 @@ def _reload_tree():
     for name in list(cli.cli.commands.keys()):
         if name not in builtins:
             cli.cli.commands.pop(name)
-    _build_cli_tree(_read_registry(), _load_aliases())
+    aliases = _load_aliases()
+    _build_cli_tree(cli._load_cli_entries(_read_registry(), aliases), aliases)
 
 
 class TestCommandTree:
@@ -664,3 +675,29 @@ class TestDeploymentConfig:
         result = runner.invoke(cli.cli, ["core", "install-completion", "bash"])
         assert result.exit_code == 0
         assert "_MY_TOOLS_COMPLETE" in result.output
+
+    def test_install_completion_bash_does_not_use_env_command(self, repo, runner, monkeypatch):
+        monkeypatch.setattr(cli, "CLI_NAME", "my-tools")
+        monkeypatch.setattr(cli, "COMPLETION_VAR", "_MY_TOOLS_COMPLETE")
+        result = runner.invoke(cli.cli, ["core", "install-completion", "bash"])
+        assert result.exit_code == 0
+        assert "$(env " not in result.output
+        assert "$(_MY_TOOLS_COMPLETE" not in result.output or "_MY_TOOLS_COMPLETE" in result.output
+
+    def test_completion_returns_choice_values_for_typed_option(
+            self, repo, runner, make_script, make_sidecar):
+        make_script("jira/update.py")
+        make_sidecar("jira/update.py", {
+            "description": "Update issues.",
+            "args": [{"name": "output", "choices": ["keys", "json"], "default": "keys"}],
+        })
+        _register_in_tmp("jira/update.py")
+        _reload_tree()
+        env = {
+            cli.COMPLETION_VAR: "bash_complete",
+            "COMP_WORDS": "toolrack jira update --output j",
+            "COMP_CWORD": "4",
+        }
+        result = runner.invoke(cli.cli, [], env=env, prog_name="toolrack")
+        assert result.exit_code == 0, result.output
+        assert "plain,json" in result.output

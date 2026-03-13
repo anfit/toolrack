@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 import ntpath
 import os
 import subprocess
@@ -100,6 +101,7 @@ REGISTRY_FILE = (
     _normalize_env_path(os.environ.get("TOOLRACK_REGISTRY_FILE"))
     or os.path.join(REPO_ROOT, DEFAULT_REGISTRY_BASENAME)
 )
+CACHE_FILE = _normalize_env_path(os.environ.get("TOOLRACK_CACHE_FILE")) or (REGISTRY_FILE + ".cache.json")
 
 _SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
 _RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
@@ -136,6 +138,64 @@ def _resolve_script_path(raw: str) -> str:
 
 def _abs_script_path(registry_entry: str) -> str:
     return os.path.normpath(os.path.join(REPO_ROOT, registry_entry))
+
+
+def _file_state(path: str) -> dict[str, int | bool]:
+    try:
+        stat = os.stat(path)
+    except FileNotFoundError:
+        return {"exists": False, "size": 0, "mtime_ns": 0}
+    return {"exists": True, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _cache_signature(registry: list[str]) -> str:
+    cfg_path = os.path.join(SCRIPTS_ROOT, "aliases.cfg")
+    payload = {
+        "repo_root": REPO_ROOT,
+        "scripts_root": SCRIPTS_ROOT,
+        "registry_file": REGISTRY_FILE,
+        "registry": registry,
+        "registry_state": _file_state(REGISTRY_FILE),
+        "aliases_state": _file_state(cfg_path),
+        "entries": [
+            {
+                "registry_entry": entry,
+                "script_state": _file_state(_abs_script_path(entry)),
+                "sidecar_state": _file_state(_sidecar_path(_abs_script_path(entry))),
+            }
+            for entry in registry
+        ],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _read_cache(registry: list[str]) -> list[dict] | None:
+    if not os.path.isfile(CACHE_FILE):
+        return None
+    try:
+        with open(CACHE_FILE, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("signature") != _cache_signature(registry):
+        return None
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        return None
+    return entries
+
+
+def _write_cache(registry: list[str], entries: list[dict]) -> None:
+    cache_dir = os.path.dirname(CACHE_FILE)
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+    payload = {
+        "signature": _cache_signature(registry),
+        "entries": entries,
+    }
+    with open(CACHE_FILE, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
 
 
 def _load_aliases() -> dict[str, str]:
@@ -445,7 +505,65 @@ def _group_path_and_cmd(registry_entry: str, aliases: dict[str, str]) -> tuple[l
     return resolved, cmd_name, abs_path
 
 
-def _build_cli_tree(registry: list[str], aliases: dict[str, str]) -> None:
+def _discover_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[dict]:
+    discovered: list[dict] = []
+
+    for entry in registry:
+        abs_path = _abs_script_path(entry)
+        if not os.path.isfile(abs_path):
+            click.echo(f"[{CLI_NAME}] warning: registered script not found: {entry}", err=True)
+            continue
+
+        try:
+            sidecar = _load_sidecar(abs_path)
+            if sidecar is None:
+                click.echo(
+                    f"[{CLI_NAME}] warning: sidecar missing for registered script: {entry}\n"
+                    f"  Run `{CLI_NAME} core register {entry}` to regenerate it.",
+                    err=True,
+                )
+                continue
+            _validate_sidecar(sidecar, abs_path)
+        except RuntimeError as exc:
+            click.echo(f"[{CLI_NAME}] skipping {entry}: {exc}", err=True)
+            continue
+
+        group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases)
+        discovered.append(
+            {
+                "entry": entry,
+                "abs_path": abs_path,
+                "group_parts": group_parts,
+                "cmd_name": cmd_name,
+                "sidecar": sidecar,
+            }
+        )
+
+    return discovered
+
+
+def _load_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[dict]:
+    cached = _read_cache(registry)
+    if cached is not None:
+        return cached
+    discovered = _discover_cli_entries(registry, aliases)
+    try:
+        _write_cache(registry, discovered)
+    except OSError:
+        pass
+    return discovered
+
+
+def _refresh_cache() -> None:
+    try:
+        registry = _read_registry()
+        aliases = _load_aliases()
+        _write_cache(registry, _discover_cli_entries(registry, aliases))
+    except (OSError, RuntimeError):
+        return
+
+
+def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
     groups: dict[tuple[str, ...], click.Group] = {}
 
     def get_or_create_group(name_parts: list[str]) -> click.Group:
@@ -491,31 +609,15 @@ def _build_cli_tree(registry: list[str], aliases: dict[str, str]) -> None:
         groups[key] = group
         return group
 
-    for entry in registry:
-        abs_path = _abs_script_path(entry)
-        if not os.path.isfile(abs_path):
-            click.echo(f"[{CLI_NAME}] warning: registered script not found: {entry}", err=True)
-            continue
-
-        try:
-            sidecar = _load_sidecar(abs_path)
-            if sidecar is None:
-                click.echo(
-                    f"[{CLI_NAME}] warning: sidecar missing for registered script: {entry}\n"
-                    f"  Run `{CLI_NAME} core register {entry}` to regenerate it.",
-                    err=True,
-                )
-                continue
-            _validate_sidecar(sidecar, abs_path)
-        except RuntimeError as exc:
-            click.echo(f"[{CLI_NAME}] skipping {entry}: {exc}", err=True)
-            continue
-
-        group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases)
+    for entry in entries:
+        group_parts = entry["group_parts"]
+        cmd_name = entry["cmd_name"]
+        abs_path = entry["abs_path"]
+        sidecar = entry["sidecar"]
         try:
             cmd = _make_command(abs_path, cmd_name, sidecar)
         except RuntimeError as exc:
-            click.echo(f"[{CLI_NAME}] error building command for {entry}: {exc}", err=True)
+            click.echo(f"[{CLI_NAME}] error building command for {entry['entry']}: {exc}", err=True)
             continue
 
         if group_parts:
@@ -530,7 +632,8 @@ def cli():
     """Typed dispatcher for a user-owned scripts repository."""
 
 
-_build_cli_tree(_read_registry(), _load_aliases())
+_INITIAL_ALIASES = _load_aliases()
+_build_cli_tree(_load_cli_entries(_read_registry(), _INITIAL_ALIASES), _INITIAL_ALIASES)
 
 
 @cli.group("core")
@@ -579,6 +682,7 @@ def cmd_register(script_path: str):
 
     registry.append(canonical)
     _write_registry(registry)
+    _refresh_cache()
     click.echo(f"Registered: {canonical}")
 
 
@@ -631,6 +735,7 @@ def cmd_auto_register(dry_run: bool):
 
     if not dry_run:
         _write_registry(registry)
+        _refresh_cache()
 
     prefix = "[dry-run] " if dry_run else ""
     for canonical in skipped:
@@ -656,6 +761,7 @@ def cmd_unregister(script_path: str):
 
     registry.remove(canonical)
     _write_registry(registry)
+    _refresh_cache()
     click.echo(f"Unregistered: {canonical}")
 
 
@@ -692,6 +798,7 @@ def cmd_reregister():
             click.echo(f"  ERROR    {entry}: {exc}", err=True)
             errors += 1
 
+    _refresh_cache()
     click.echo(f"\n{ok} ok, {errors} errors.")
 
 
@@ -721,6 +828,8 @@ def install_completion(shell: str):
     # Use the base formatter directly so we don't shell out to probe the
     # user's Bash installation when merely printing the completion script.
     source = ShellComplete.source(comp).replace("\r\n", "\n").replace("\r", "\n")
+    if shell == "bash":
+        source = source.replace("$(env ", "$(")
     sys.stdout.write(source)
     sys.stdout.flush()
 
