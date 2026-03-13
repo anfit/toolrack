@@ -29,6 +29,40 @@ This project is not trying to turn your script repo into a framework empire. It
 is trying to help your collection of tiny automations stay tidy, callable, and
 pleasant to use after the novelty phase.
 
+## Showcase
+
+The intended flow looks like this:
+
+1. Create a scripts repository with a clear layout.
+   There is a starter repo for that:
+   [`toolrack-template`](https://github.com/anfit/toolrack-template).
+2. Add small scripts under folders that match their area of work:
+   `github/`, `jira/`, `db/`, `images/`, `deploy/`, and so on.
+3. Put a sidecar next to each script so the command has typed arguments, help,
+   and completion.
+4. Plug `toolrack` into that repo so the whole thing becomes one coherent CLI.
+
+The result is one command on your `PATH`, available from PowerShell, Git Bash,
+or Cygwin, with shared help and completion instead of a growing folklore of
+"I think that one is in a repo called maybe-tools-old?"
+
+Example:
+
+```text
+my-tools github list-prs --state open --limit 20
+my-tools jira show ISSUE-123
+my-tools db query --env prod --file scripts/db/slow_report.sql
+```
+
+That is the main payoff: when you want to make a new script, it is not trapped
+in "that project you did two years ago". It lives next to two similar scripts
+in the folder dedicated to that area, where both humans and models can find the
+pattern immediately.
+
+Which also makes the AI prompt much nicer:
+
+> Hey AI, make me one like this, but mauve.
+
 ## Deployment Model
 
 `toolrack` is meant to be installed into a scripts repository and launched
