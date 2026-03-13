@@ -102,6 +102,9 @@ REGISTRY_FILE = (
     or os.path.join(REPO_ROOT, DEFAULT_REGISTRY_BASENAME)
 )
 CACHE_FILE = _normalize_env_path(os.environ.get("TOOLRACK_CACHE_FILE")) or (REGISTRY_FILE + ".cache.json")
+ALIASES_FILE = _normalize_env_path(os.environ.get("TOOLRACK_ALIASES_FILE")) or os.path.join(
+    REPO_ROOT, "aliases.cfg"
+)
 
 _SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
 _RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
@@ -149,14 +152,14 @@ def _file_state(path: str) -> dict[str, int | bool]:
 
 
 def _cache_signature(registry: list[str]) -> str:
-    cfg_path = os.path.join(SCRIPTS_ROOT, "aliases.cfg")
     payload = {
         "repo_root": REPO_ROOT,
         "scripts_root": SCRIPTS_ROOT,
         "registry_file": REGISTRY_FILE,
+        "aliases_file": ALIASES_FILE,
         "registry": registry,
         "registry_state": _file_state(REGISTRY_FILE),
-        "aliases_state": _file_state(cfg_path),
+        "aliases_state": _file_state(ALIASES_FILE),
         "entries": [
             {
                 "registry_entry": entry,
@@ -200,10 +203,9 @@ def _write_cache(registry: list[str], entries: list[dict]) -> None:
 
 def _load_aliases() -> dict[str, str]:
     cfg = configparser.ConfigParser()
-    cfg_path = os.path.join(SCRIPTS_ROOT, "aliases.cfg")
-    if not os.path.isfile(cfg_path):
+    if not os.path.isfile(ALIASES_FILE):
         return {}
-    cfg.read(cfg_path)
+    cfg.read(ALIASES_FILE)
     if not cfg.has_section("groups"):
         return {}
 

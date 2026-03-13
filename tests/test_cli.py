@@ -259,7 +259,7 @@ class TestAliases:
         assert a["refactoring"] == "refactor"
 
     def test_missing_groups_section_returns_empty(self, repo):
-        (repo["scripts"] / "aliases.cfg").write_text("[other]\nfoo = bar\n")
+        repo["aliases"].write_text("[other]\nfoo = bar\n")
         assert _load_aliases() == {}
 
     def test_collision_raises(self, aliases_cfg):

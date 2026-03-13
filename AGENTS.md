@@ -43,7 +43,7 @@ pyproject.toml
 | `_load_sidecar(abs_path)` | `dict\|None` | `None` if absent; raises on malformed YAML |
 | `_generate_sidecar(abs_path)` | `dict` | Writes passthrough stub, returns it |
 | `_validate_sidecar(sidecar, abs_path)` | — | Raises `RuntimeError` on violations |
-| `_load_aliases()` | `dict` | Reads `scripts/aliases.cfg [groups]`; raises on collision |
+| `_load_aliases()` | `dict` | Reads repo-root `aliases.cfg [groups]`; raises on collision |
 | `_make_command(abs_path, cmd_name, sidecar)` | `click.Command` | Builds typed Click command |
 | `_build_cli_tree(registry, aliases)` | — | Attaches all commands to `cli` |
 

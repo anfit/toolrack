@@ -66,7 +66,20 @@ A scripts repository normally contains:
 
 - `scripts/`: runnable `.py`, `.sh`, `.bash`, or `.sql` files
 - `.toolrack`: registry of enabled scripts
+- `.toolrack.cache.json`: cached command metadata used for faster startup and completion
+- `aliases.cfg`: optional group aliases, stored next to `.toolrack`
 - `bin/`: wrappers that export the toolrack environment variables
+
+`aliases.cfg` lets you shorten first-level or nested group paths without
+renaming folders. For example:
+
+```ini
+[groups]
+environments = env
+refactoring = refactor
+```
+
+That turns `your-tools environments get-status` into `your-tools env get-status`.
 
 Sidecars live next to scripts as `<script>.yml`. See
 [SIDECAR_SPEC.md](/C:/projects/toolrack/SIDECAR_SPEC.md).

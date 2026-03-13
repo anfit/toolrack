@@ -1,4 +1,4 @@
 {
   "entries": [],
-  "signature": "{\"aliases_state\":{\"exists\":false,\"mtime_ns\":0,\"size\":0},\"entries\":[],\"registry\":[],\"registry_file\":\"C:\\\\projects\\\\toolrack\\\\.toolrack\",\"registry_state\":{\"exists\":false,\"mtime_ns\":0,\"size\":0},\"repo_root\":\"C:\\\\projects\\\\toolrack\",\"scripts_root\":\"C:\\\\projects\\\\toolrack\\\\scripts\"}"
+  "signature": "{\"aliases_file\":\"C:\\\\projects\\\\toolrack\\\\aliases.cfg\",\"aliases_state\":{\"exists\":false,\"mtime_ns\":0,\"size\":0},\"entries\":[],\"registry\":[],\"registry_file\":\"C:\\\\projects\\\\toolrack\\\\.toolrack\",\"registry_state\":{\"exists\":false,\"mtime_ns\":0,\"size\":0},\"repo_root\":\"C:\\\\projects\\\\toolrack\",\"scripts_root\":\"C:\\\\projects\\\\toolrack\\\\scripts\"}"
 }

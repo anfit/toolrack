@@ -22,13 +22,15 @@ def repo(tmp_path, monkeypatch):
     scripts.mkdir()
     registry = tmp_path / ".toolrack"
     cache = tmp_path / ".toolrack.cache.json"
+    aliases = tmp_path / "aliases.cfg"
 
     monkeypatch.setattr(cli, "REPO_ROOT", str(tmp_path))
     monkeypatch.setattr(cli, "SCRIPTS_ROOT", str(scripts))
     monkeypatch.setattr(cli, "REGISTRY_FILE", str(registry))
     monkeypatch.setattr(cli, "CACHE_FILE", str(cache))
+    monkeypatch.setattr(cli, "ALIASES_FILE", str(aliases))
 
-    return {"root": tmp_path, "scripts": scripts, "registry": registry, "cache": cache}
+    return {"root": tmp_path, "scripts": scripts, "registry": registry, "cache": cache, "aliases": aliases}
 
 
 @pytest.fixture()
@@ -71,11 +73,11 @@ def make_sidecar(repo):
 
 @pytest.fixture()
 def aliases_cfg(repo):
-    """Factory for writing scripts/aliases.cfg with a [groups] section."""
+    """Factory for writing repo-root aliases.cfg with a [groups] section."""
 
     def _make(mapping: dict) -> str:
         lines = ["[groups]\n"] + [f"{key} = {value}\n" for key, value in mapping.items()]
-        path = repo["scripts"] / "aliases.cfg"
+        path = repo["aliases"]
         path.write_text("".join(lines), encoding="utf-8")
         return str(path)
 
