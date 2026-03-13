@@ -652,3 +652,15 @@ class TestDeploymentConfig:
         result = runner.invoke(cli.cli, ["core", "install-completion", "bash"])
         assert result.exit_code == 0
         assert "_MY_TOOLS_COMPLETE" in result.output
+
+    def test_install_completion_does_not_probe_bash_version(self, repo, runner, monkeypatch):
+        monkeypatch.setattr(cli, "CLI_NAME", "my-tools")
+        monkeypatch.setattr(cli, "COMPLETION_VAR", "_MY_TOOLS_COMPLETE")
+
+        def fail_check_version(*_args, **_kwargs) -> None:
+            raise OSError(22, "requested operation is not supported")
+
+        monkeypatch.setattr("click.shell_completion.BashComplete._check_version", fail_check_version)
+        result = runner.invoke(cli.cli, ["core", "install-completion", "bash"])
+        assert result.exit_code == 0
+        assert "_MY_TOOLS_COMPLETE" in result.output

@@ -714,12 +714,15 @@ def cmd_list():
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]), default="bash")
 def install_completion(shell: str):
     """Print the shell completion script to stdout."""
-    from click.shell_completion import BashComplete, FishComplete, ZshComplete
+    from click.shell_completion import BashComplete, FishComplete, ShellComplete, ZshComplete
 
     shell_cls = {"bash": BashComplete, "zsh": ZshComplete, "fish": FishComplete}[shell]
     comp = shell_cls(cli, {}, CLI_NAME, COMPLETION_VAR)
-    source = comp.source().replace("\r\n", "\n").replace("\r", "\n")
-    sys.stdout.buffer.write(source.encode())
+    # Use the base formatter directly so we don't shell out to probe the
+    # user's Bash installation when merely printing the completion script.
+    source = ShellComplete.source(comp).replace("\r\n", "\n").replace("\r", "\n")
+    sys.stdout.write(source)
+    sys.stdout.flush()
 
 
 def main() -> None:
