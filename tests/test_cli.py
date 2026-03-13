@@ -515,6 +515,18 @@ class TestReregister:
         assert "ERROR" in result.output or "error" in result.output.lower()
 
 
+class TestRefreshCache:
+
+    def test_refresh_cache_rebuilds_cache_file(self, repo, runner, make_script, make_sidecar):
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "ok"})
+        repo["registry"].write_text("scripts/github/check_review.py\n", encoding="utf-8")
+        result = runner.invoke(cli.cli, ["core", "refresh-cache"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(repo["cache"].read_text(encoding="utf-8"))
+        assert payload["entries"][0]["cmd_name"] == "check-review"
+
+
 # ===========================================================================
 # Command tree building
 # ===========================================================================

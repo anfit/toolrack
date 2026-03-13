@@ -56,6 +56,7 @@ Defaults:
 - `core auto-register`: scan `scripts/` for sidecar-backed scripts
 - `core unregister <script_path>`: remove one script from the registry
 - `core reregister`: validate every registered script and sidecar
+- `core refresh-cache`: rebuild the cached command metadata next to `.toolrack`
 - `core list`: show registry entries and sidecar status
 - `core install-completion <shell>`: print shell completion source
 

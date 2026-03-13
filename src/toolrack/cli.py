@@ -802,6 +802,13 @@ def cmd_reregister():
     click.echo(f"\n{ok} ok, {errors} errors.")
 
 
+@core.command("refresh-cache")
+def cmd_refresh_cache():
+    """Rebuild the command metadata cache next to the registry."""
+    _refresh_cache()
+    click.echo(f"Refreshed cache: {CACHE_FILE}")
+
+
 @core.command("list")
 def cmd_list():
     """List all registered scripts."""
