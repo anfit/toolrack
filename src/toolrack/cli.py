@@ -1,0 +1,730 @@
+#!/usr/bin/env python3
+"""toolrack - typed dispatcher for a user-owned scripts repository."""
+
+from __future__ import annotations
+
+import configparser
+import ntpath
+import os
+import subprocess
+import sys
+
+import click
+
+
+def _default_cli_name() -> str:
+    prog = os.path.basename(sys.argv[0] or "").strip()
+    if prog:
+        prog = os.path.splitext(prog)[0]
+        if prog not in {"", "__main__", "-m"}:
+            return prog
+    return "toolrack"
+
+
+CLI_NAME = os.environ.get("TOOLRACK_CLI_NAME") or _default_cli_name()
+COMPLETION_VAR = "_" + CLI_NAME.replace("-", "_").upper() + "_COMPLETE"
+DEFAULT_REGISTRY_BASENAME = os.environ.get("TOOLRACK_REGISTRY_BASENAME") or ".toolrack"
+
+
+def _fix_windows_completion_crlf() -> None:
+    if os.name != "nt":
+        return
+    if not os.environ.get(COMPLETION_VAR):
+        return
+    import io
+
+    sys.stdout = io.TextIOWrapper(
+        sys.stdout.buffer,
+        encoding=sys.stdout.encoding or "utf-8",
+        errors="replace",
+        newline="",
+        line_buffering=False,
+    )
+
+
+_fix_windows_completion_crlf()
+
+
+def _registry_candidates() -> list[str]:
+    candidates = [
+        os.environ.get("TOOLRACK_REGISTRY_FILE"),
+        DEFAULT_REGISTRY_BASENAME,
+        ".attic",
+    ]
+    return [candidate for candidate in candidates if candidate]
+
+
+def _normalize_env_path(value: str | None) -> str | None:
+    """Map Git Bash / Cygwin Windows mount paths back to native Windows paths."""
+    if not value or os.name != "nt":
+        return value
+
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/cygdrive/") and len(normalized) > len("/cygdrive/x/"):
+        drive = normalized[len("/cygdrive/")]
+        remainder = normalized[len("/cygdrive/x") :]
+        return ntpath.normpath(f"{drive.upper()}:{remainder}")
+
+    if normalized.startswith("/") and len(normalized) > 3 and normalized[2] == "/":
+        drive = normalized[1]
+        if drive.isalpha():
+            remainder = normalized[2:]
+            return ntpath.normpath(f"{drive.upper()}:{remainder}")
+
+    return value
+
+
+def _find_repo_root() -> str:
+    """Walk up from cwd until we find the registry file or .git."""
+    here = os.path.abspath(os.getcwd())
+    candidate = here
+    while True:
+        for registry_name in _registry_candidates():
+            if os.path.isabs(registry_name):
+                continue
+            if os.path.isfile(os.path.join(candidate, registry_name)):
+                return candidate
+        if os.path.isdir(os.path.join(candidate, ".git")):
+            return candidate
+        parent = os.path.dirname(candidate)
+        if parent == candidate:
+            return here
+        candidate = parent
+
+
+REPO_ROOT = _normalize_env_path(os.environ.get("TOOLRACK_REPO_ROOT")) or _find_repo_root()
+SCRIPTS_ROOT = _normalize_env_path(os.environ.get("TOOLRACK_SCRIPTS_ROOT")) or os.path.join(
+    REPO_ROOT, "scripts"
+)
+REGISTRY_FILE = (
+    _normalize_env_path(os.environ.get("TOOLRACK_REGISTRY_FILE"))
+    or os.path.join(REPO_ROOT, DEFAULT_REGISTRY_BASENAME)
+)
+
+_SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
+_RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
+
+
+def _read_registry() -> list[str]:
+    if not os.path.isfile(REGISTRY_FILE):
+        return []
+    with open(REGISTRY_FILE, encoding="utf-8") as handle:
+        return [
+            line.strip()
+            for line in handle
+            if line.strip() and not line.strip().startswith("#")
+        ]
+
+
+def _write_registry(paths: list[str]) -> None:
+    with open(REGISTRY_FILE, "w", encoding="utf-8") as handle:
+        for path in paths:
+            handle.write(path + "\n")
+
+
+def _resolve_script_path(raw: str) -> str:
+    if os.path.isabs(raw):
+        p = os.path.abspath(raw)
+    else:
+        repo_candidate = os.path.join(REPO_ROOT, raw)
+        p = os.path.abspath(repo_candidate if os.path.exists(repo_candidate) else raw)
+    try:
+        return os.path.relpath(p, REPO_ROOT).replace(os.sep, "/")
+    except ValueError:
+        return p.replace(os.sep, "/")
+
+
+def _abs_script_path(registry_entry: str) -> str:
+    return os.path.normpath(os.path.join(REPO_ROOT, registry_entry))
+
+
+def _load_aliases() -> dict[str, str]:
+    cfg = configparser.ConfigParser()
+    cfg_path = os.path.join(SCRIPTS_ROOT, "aliases.cfg")
+    if not os.path.isfile(cfg_path):
+        return {}
+    cfg.read(cfg_path)
+    if not cfg.has_section("groups"):
+        return {}
+
+    aliases: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    for original, alias in cfg.items("groups"):
+        if alias in seen:
+            raise RuntimeError(
+                f"aliases.cfg collision: '{original}' and '{seen[alias]}' both map to '{alias}'"
+            )
+        aliases[original] = alias
+        seen[alias] = original
+    return aliases
+
+
+def _sidecar_path(script_path: str) -> str:
+    return os.path.splitext(script_path)[0] + ".yml"
+
+
+def _generate_sidecar(script_path: str) -> dict:
+    import yaml
+
+    name = os.path.basename(script_path)
+    sidecar = {
+        "# autogenerated": (
+            f"This sidecar was created automatically by `{CLI_NAME} core register`.\n"
+            "Arguments are passed through verbatim. Replace it with a typed sidecar."
+        ),
+        "description": f"Run {name} (autogenerated; edit to add proper description).",
+        "args": [
+            {
+                "name": "args",
+                "positional": True,
+                "variadic": True,
+                "required": False,
+                "help": "All arguments passed through verbatim to the script.",
+            }
+        ],
+    }
+    with open(_sidecar_path(script_path), "w", encoding="utf-8") as handle:
+        yaml.dump(sidecar, handle, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return sidecar
+
+
+def _load_sidecar(script_path: str) -> dict | None:
+    yml_path = _sidecar_path(script_path)
+    if not os.path.isfile(yml_path):
+        return None
+    import yaml
+
+    with open(yml_path, encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{yml_path}: sidecar must be a YAML mapping, got {type(data).__name__}")
+    return data
+
+
+def _validate_sidecar(sidecar: dict, script_path: str) -> None:
+    ext = os.path.splitext(script_path)[1].lower()
+    args = sidecar.get("args") or []
+    name = os.path.basename(script_path)
+
+    if ext == ".sql" and args:
+        raise RuntimeError(f"{name}: SQL scripts must not declare 'args'.")
+
+    seen_names: set[str] = set()
+    variadic_seen = False
+    for arg in args:
+        arg_name = arg.get("name", "")
+        if arg_name in seen_names:
+            raise RuntimeError(f"{name}: duplicate arg name '{arg_name}'.")
+        seen_names.add(arg_name)
+        if variadic_seen:
+            raise RuntimeError(f"{name}: '{arg_name}' appears after variadic; variadic must be last.")
+        if arg.get("variadic"):
+            if not arg.get("positional"):
+                raise RuntimeError(f"{name}: '{arg_name}' is variadic but not positional.")
+            variadic_seen = True
+        if arg.get("multiple") and arg.get("positional"):
+            raise RuntimeError(f"{name}: '{arg_name}' cannot be both multiple and positional.")
+        if arg.get("flag") and arg.get("type") not in (None, "bool"):
+            raise RuntimeError(f"{name}: '{arg_name}' is a flag but declares type '{arg['type']}'.")
+
+
+def _to_bash_path(windows_path: str, bash_exe: str = "") -> str:
+    if os.name != "nt":
+        return windows_path
+
+    cygpath_candidates: list[str] = []
+    if bash_exe:
+        bash_dir = os.path.dirname(os.path.abspath(bash_exe))
+        same_dir = os.path.join(bash_dir, "cygpath.exe")
+        parent_usr_bin = os.path.join(os.path.dirname(bash_dir), "usr", "bin", "cygpath.exe")
+        for candidate in (same_dir, parent_usr_bin):
+            if os.path.isfile(candidate):
+                cygpath_candidates.append(candidate)
+    cygpath_candidates.append("cygpath")
+
+    for cygpath_exe in cygpath_candidates:
+        try:
+            result = subprocess.run(
+                [cygpath_exe, "-u", windows_path],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+    path = windows_path.replace("\\", "/")
+    if len(path) >= 2 and path[1] == ":":
+        path = "/" + path[0].lower() + path[2:]
+    return path
+
+
+def _resolve_bash_exe() -> str:
+    if os.name != "nt":
+        return "bash"
+
+    cygwin_bash = r"C:\cygwin64\bin\bash.exe"
+    git_bash = r"C:\Program Files\Git\bin\bash.exe"
+
+    if not os.environ.get("MSYSTEM"):
+        path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+        cygwin_bin = r"C:\cygwin64\bin"
+        gitbash_bin = r"C:\Program Files\Git\bin"
+
+        def _norm(value: str) -> str:
+            return os.path.normcase(os.path.normpath(value))
+
+        normed = [_norm(entry) for entry in path_dirs]
+        cygwin_idx = next((idx for idx, entry in enumerate(normed) if entry == _norm(cygwin_bin)), 999)
+        gitbash_idx = next((idx for idx, entry in enumerate(normed) if entry == _norm(gitbash_bin)), 999)
+        if cygwin_idx < gitbash_idx and os.path.isfile(cygwin_bash):
+            return cygwin_bash
+
+    if os.environ.get("MSYSTEM") and os.path.isfile(git_bash):
+        return git_bash
+
+    return "bash"
+
+
+def _interpreter(script_path: str) -> list[str]:
+    ext = os.path.splitext(script_path)[1].lower()
+    if ext == ".py":
+        return [sys.executable]
+    if ext in (".sh", ".bash"):
+        return [_resolve_bash_exe()]
+    if ext == ".sql":
+        return ["psql", "-f"]
+    return []
+
+
+def _click_type(type_str: str):
+    return {
+        "int": click.INT,
+        "float": click.FLOAT,
+        "bool": click.BOOL,
+        "path": click.Path(),
+    }.get(type_str, click.STRING)
+
+
+def _make_command(script_path: str, cmd_name: str, sidecar: dict) -> click.Command:
+    interp = _interpreter(script_path)
+    desc = sidecar.get("description", "").strip()
+    arg_specs = sidecar.get("args") or []
+    env_specs = sidecar.get("env") or []
+    epilog_txt = sidecar.get("epilog", "").strip()
+
+    epilog_lines: list[str] = []
+    if env_specs:
+        epilog_lines.append("Environment variables:")
+        for env_spec in env_specs:
+            line = f"  {env_spec['name']}"
+            if env_spec.get("help"):
+                line += f"  {env_spec['help']}"
+            if env_spec.get("default") is not None:
+                line += f"  [default: {env_spec['default']}]"
+            if env_spec.get("required"):
+                line += "  [required]"
+            epilog_lines.append(line)
+    if epilog_txt:
+        if epilog_lines:
+            epilog_lines.append("")
+        epilog_lines.append(epilog_txt)
+    epilog = "\n".join(epilog_lines) or None
+
+    params: list = []
+    for arg in arg_specs:
+        arg_name = arg["name"]
+        is_positional = bool(arg.get("positional"))
+        is_flag = bool(arg.get("flag"))
+        is_multiple = bool(arg.get("multiple"))
+        is_variadic = bool(arg.get("variadic"))
+        required = arg.get("required", True if is_positional else False)
+        default = arg.get("default")
+        choices = arg.get("choices")
+        help_text = arg.get("help", "")
+        click_type = _click_type(arg.get("type", "string"))
+
+        if choices:
+            click_type = click.Choice([str(choice) for choice in choices])
+        if is_flag:
+            click_type = click.BOOL
+
+        if is_positional:
+            params.append(
+                click.Argument(
+                    [arg_name],
+                    required=required,
+                    type=click_type,
+                    nargs=-1 if is_variadic else 1,
+                )
+            )
+            continue
+
+        flag_name = arg.get("option") or f"--{arg_name.replace('_', '-')}"
+        if is_flag:
+            params.append(click.Option([flag_name], is_flag=True, default=False, help=help_text))
+            continue
+        params.append(
+            click.Option(
+                [flag_name],
+                required=required,
+                default=default,
+                type=click_type,
+                multiple=is_multiple,
+                help=help_text,
+                show_default=default is not None,
+            )
+        )
+
+    def make_callback(path: str, interp_: list[str], specs: list[dict]):
+        def callback(**kwargs):
+            bash_exe = interp_[0] if interp_ else ""
+            exec_path = (
+                _to_bash_path(path, bash_exe)
+                if bash_exe == "bash" or bash_exe.endswith("bash.exe")
+                else path
+            )
+            cmd = list(interp_) + [exec_path]
+            for spec in specs:
+                arg_name = spec["name"]
+                value = kwargs[arg_name]
+                is_positional = bool(spec.get("positional"))
+                is_flag = bool(spec.get("flag"))
+                is_multiple = bool(spec.get("multiple"))
+                is_variadic = bool(spec.get("variadic"))
+                flag_name = spec.get("option") or f"--{arg_name.replace('_', '-')}"
+
+                if value is None or value == () or value is False:
+                    continue
+                if is_positional:
+                    if is_variadic:
+                        cmd.extend(str(item) for item in value)
+                    else:
+                        cmd.append(str(value))
+                elif is_flag:
+                    cmd.append(flag_name)
+                elif is_multiple:
+                    for item in value:
+                        cmd.extend([flag_name, str(item)])
+                else:
+                    cmd.extend([flag_name, str(value)])
+
+            result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+            sys.exit(result.returncode)
+
+        return callback
+
+    return click.Command(
+        name=cmd_name,
+        callback=make_callback(script_path, interp, arg_specs),
+        params=params,
+        help=desc,
+        epilog=epilog,
+    )
+
+
+def _to_cli_name(name: str) -> str:
+    return name.replace("_", "-")
+
+
+def _script_cli_name(filename: str) -> str:
+    return _to_cli_name(os.path.splitext(filename)[0])
+
+
+def _group_path_and_cmd(registry_entry: str, aliases: dict[str, str]) -> tuple[list[str], str, str]:
+    abs_path = _abs_script_path(registry_entry)
+    parts = registry_entry.replace("\\", "/").split("/")
+    if parts[0] == "scripts":
+        parts = parts[1:]
+    group_parts = parts[:-1]
+    filename = parts[-1]
+    cmd_name = _script_cli_name(filename)
+    resolved = [_to_cli_name(aliases.get(part, part)) for part in group_parts]
+    return resolved, cmd_name, abs_path
+
+
+def _build_cli_tree(registry: list[str], aliases: dict[str, str]) -> None:
+    groups: dict[tuple[str, ...], click.Group] = {}
+
+    def get_or_create_group(name_parts: list[str]) -> click.Group:
+        key = tuple(name_parts)
+        if key in groups:
+            return groups[key]
+
+        if len(name_parts) == 1:
+            name = name_parts[0]
+            folder = name
+            for original, alias in aliases.items():
+                if _to_cli_name(alias) == name:
+                    folder = original
+                    break
+            group = click.Group(name=name, help=f"Commands from scripts/{folder}/")
+            cli.add_command(group)
+
+            for original, alias in aliases.items():
+                if _to_cli_name(alias) == name and _to_cli_name(original) != name:
+                    shadow = click.Group(
+                        name=_to_cli_name(original),
+                        help=f"Alias; use '{name}' instead.",
+                        hidden=True,
+                    )
+                    cli.add_command(shadow)
+                    groups[(_to_cli_name(original),)] = shadow
+                    break
+
+            groups[key] = group
+            return group
+
+        parent = get_or_create_group(name_parts[:-1])
+        name = name_parts[-1]
+        if name in parent.commands:
+            return parent.commands[name]
+        folder = name
+        for original, alias in aliases.items():
+            if _to_cli_name(alias) == name:
+                folder = original
+                break
+        group = click.Group(name=name, help=f"Commands from scripts/{'/'.join(name_parts)}/")
+        parent.add_command(group)
+        groups[key] = group
+        return group
+
+    for entry in registry:
+        abs_path = _abs_script_path(entry)
+        if not os.path.isfile(abs_path):
+            click.echo(f"[{CLI_NAME}] warning: registered script not found: {entry}", err=True)
+            continue
+
+        try:
+            sidecar = _load_sidecar(abs_path)
+            if sidecar is None:
+                click.echo(
+                    f"[{CLI_NAME}] warning: sidecar missing for registered script: {entry}\n"
+                    f"  Run `{CLI_NAME} core register {entry}` to regenerate it.",
+                    err=True,
+                )
+                continue
+            _validate_sidecar(sidecar, abs_path)
+        except RuntimeError as exc:
+            click.echo(f"[{CLI_NAME}] skipping {entry}: {exc}", err=True)
+            continue
+
+        group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases)
+        try:
+            cmd = _make_command(abs_path, cmd_name, sidecar)
+        except RuntimeError as exc:
+            click.echo(f"[{CLI_NAME}] error building command for {entry}: {exc}", err=True)
+            continue
+
+        if group_parts:
+            get_or_create_group(group_parts).add_command(cmd)
+        else:
+            cli.add_command(cmd)
+
+
+@click.group()
+@click.version_option(prog_name=CLI_NAME)
+def cli():
+    """Typed dispatcher for a user-owned scripts repository."""
+
+
+_build_cli_tree(_read_registry(), _load_aliases())
+
+
+@cli.group("core")
+def core():
+    """Registry management and shell-completion commands."""
+
+
+@core.command("register")
+@click.argument("script_path")
+def cmd_register(script_path: str):
+    """Register a script as a CLI subcommand."""
+    canonical = _resolve_script_path(script_path)
+    abs_path = _abs_script_path(canonical)
+
+    if not os.path.isfile(abs_path):
+        raise click.ClickException(f"Script not found: {abs_path}")
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in _RUNNABLE_EXTS:
+        raise click.ClickException(
+            f"Unsupported extension '{ext}'. Supported: {', '.join(sorted(_RUNNABLE_EXTS))}"
+        )
+
+    try:
+        sidecar = _load_sidecar(abs_path)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc))
+
+    if sidecar is None:
+        sidecar = _generate_sidecar(abs_path)
+        click.echo(
+            f"No sidecar found; generated: {_sidecar_path(abs_path)}\n"
+            "  Arguments are passed through verbatim. Edit the sidecar to add\n"
+            "  typed options and proper help."
+        )
+    else:
+        try:
+            _validate_sidecar(sidecar, abs_path)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc))
+
+    registry = _read_registry()
+    if canonical in registry:
+        click.echo(f"Already registered: {canonical}")
+        return
+
+    registry.append(canonical)
+    _write_registry(registry)
+    click.echo(f"Registered: {canonical}")
+
+
+@core.command("auto-register")
+@click.option("--dry-run", is_flag=True, help="Show what would be registered without writing.")
+def cmd_auto_register(dry_run: bool):
+    """Scan scripts/ for sidecar+script pairs and register unregistered ones."""
+    registry = _read_registry()
+    registry_set = set(registry)
+    added: list[str] = []
+    skipped: list[str] = []
+    failures: list[tuple[str, str]] = []
+
+    for dirpath, dirnames, filenames in os.walk(SCRIPTS_ROOT):
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames if dirname not in _SKIP_DIRS and not dirname.startswith(".")
+        )
+        for filename in sorted(filenames):
+            if not filename.endswith(".yml"):
+                continue
+            stem = os.path.splitext(filename)[0]
+            script_path = None
+            for ext in _RUNNABLE_EXTS:
+                candidate = os.path.join(dirpath, stem + ext)
+                if os.path.isfile(candidate):
+                    script_path = candidate
+                    break
+            if script_path is None:
+                continue
+
+            canonical = _resolve_script_path(script_path)
+            if canonical in registry_set:
+                skipped.append(canonical)
+                continue
+
+            try:
+                sidecar = _load_sidecar(script_path)
+                if sidecar is None:
+                    failures.append((canonical, "sidecar could not be loaded"))
+                    continue
+                _validate_sidecar(sidecar, script_path)
+            except RuntimeError as exc:
+                failures.append((canonical, str(exc)))
+                continue
+
+            added.append(canonical)
+            if not dry_run:
+                registry.append(canonical)
+                registry_set.add(canonical)
+
+    if not dry_run:
+        _write_registry(registry)
+
+    prefix = "[dry-run] " if dry_run else ""
+    for canonical in skipped:
+        click.echo(f"  SKIP     {canonical}  (already registered)")
+    for canonical in added:
+        click.echo(f"  {prefix}ADD      {canonical}")
+    for canonical, reason in failures:
+        click.echo(f"  ERROR    {canonical}: {reason}", err=True)
+
+    action = "Would add" if dry_run else "Added"
+    click.echo(f"\n{action} {len(added)}, skipped {len(skipped)}, {len(failures)} errors.")
+
+
+@core.command("unregister")
+@click.argument("script_path")
+def cmd_unregister(script_path: str):
+    """Remove a script from the registry."""
+    canonical = _resolve_script_path(script_path)
+    registry = _read_registry()
+
+    if canonical not in registry:
+        raise click.ClickException(f"Not registered: {canonical}")
+
+    registry.remove(canonical)
+    _write_registry(registry)
+    click.echo(f"Unregistered: {canonical}")
+
+
+@core.command("reregister")
+def cmd_reregister():
+    """Re-validate all registered commands."""
+    registry = _read_registry()
+    if not registry:
+        click.echo("Nothing registered.")
+        return
+
+    _load_aliases()
+    ok = 0
+    errors = 0
+    for entry in registry:
+        abs_path = _abs_script_path(entry)
+        if not os.path.isfile(abs_path):
+            click.echo(f"  MISSING  {entry}", err=True)
+            errors += 1
+            continue
+        try:
+            sidecar = _load_sidecar(abs_path)
+            if sidecar is None:
+                click.echo(
+                    f"  NO SIDECAR  {entry}  (run: {CLI_NAME} core register {entry})",
+                    err=True,
+                )
+                errors += 1
+                continue
+            _validate_sidecar(sidecar, abs_path)
+            click.echo(f"  OK       {entry}")
+            ok += 1
+        except RuntimeError as exc:
+            click.echo(f"  ERROR    {entry}: {exc}", err=True)
+            errors += 1
+
+    click.echo(f"\n{ok} ok, {errors} errors.")
+
+
+@core.command("list")
+def cmd_list():
+    """List all registered scripts."""
+    registry = _read_registry()
+    if not registry:
+        click.echo(f"No scripts registered. Use: {CLI_NAME} core register <script_path>")
+        return
+    for entry in registry:
+        abs_path = _abs_script_path(entry)
+        status = "ok" if os.path.isfile(abs_path) else "MISSING"
+        sidecar_exists = os.path.isfile(_sidecar_path(abs_path))
+        sidecar_tag = "" if sidecar_exists else "  [no sidecar]"
+        click.echo(f"  [{status}]  {entry}{sidecar_tag}")
+
+
+@core.command("install-completion")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]), default="bash")
+def install_completion(shell: str):
+    """Print the shell completion script to stdout."""
+    from click.shell_completion import BashComplete, FishComplete, ZshComplete
+
+    shell_cls = {"bash": BashComplete, "zsh": ZshComplete, "fish": FishComplete}[shell]
+    comp = shell_cls(cli, {}, CLI_NAME, COMPLETION_VAR)
+    source = comp.source().replace("\r\n", "\n").replace("\r", "\n")
+    sys.stdout.buffer.write(source.encode())
+
+
+def main() -> None:
+    cli(prog_name=CLI_NAME)
+
+
+if __name__ == "__main__":
+    main()
