@@ -25,6 +25,9 @@ def _default_cli_name() -> str:
 CLI_NAME = os.environ.get("TOOLRACK_CLI_NAME") or _default_cli_name()
 COMPLETION_VAR = "_" + CLI_NAME.replace("-", "_").upper() + "_COMPLETE"
 DEFAULT_REGISTRY_BASENAME = os.environ.get("TOOLRACK_REGISTRY_BASENAME") or ".toolrack"
+# TODO(#12): Move environment-derived settings into an explicit runtime config object.
+# Import-time globals make packaging harder, complicate tests, and will get in
+# the way once toolrack is used as an installed library as well as a checkout.
 
 
 def _fix_windows_completion_crlf() -> None:
@@ -105,6 +108,10 @@ CACHE_FILE = _normalize_env_path(os.environ.get("TOOLRACK_CACHE_FILE")) or (REGI
 ALIASES_FILE = _normalize_env_path(os.environ.get("TOOLRACK_ALIASES_FILE")) or os.path.join(
     REPO_ROOT, "aliases.cfg"
 )
+# TODO(#2): Replace the module-level repository state with a repository/session
+# object. Right now path resolution, cache settings, and CLI construction are
+# all coupled to global variables, which is convenient for a checkout but weak
+# for multi-repo usage, packaging, and reuse from other Python entry points.
 
 _SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
 _RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
@@ -152,6 +159,9 @@ def _file_state(path: str) -> dict[str, int | bool]:
 
 
 def _cache_signature(registry: list[str]) -> str:
+    # TODO(#3): Promote cached entry payloads to typed models instead of raw dicts.
+    # The current JSON contract is convenient but fragile: field names are
+    # unchecked, easy to drift, and spread across multiple helpers.
     payload = {
         "repo_root": REPO_ROOT,
         "scripts_root": SCRIPTS_ROOT,
@@ -203,6 +213,9 @@ def _write_cache(registry: list[str], entries: list[dict]) -> None:
 
 def _load_aliases() -> dict[str, str]:
     cfg = configparser.ConfigParser()
+    # TODO(#4): Merge registry/cache/aliases metadata into one top-level repo
+    # manifest object. These files are now conceptually related, but the code
+    # still treats them as separate incidental globals.
     if not os.path.isfile(ALIASES_FILE):
         return {}
     cfg.read(ALIASES_FILE)
@@ -291,6 +304,9 @@ def _validate_sidecar(sidecar: dict, script_path: str) -> None:
 
 
 def _to_bash_path(windows_path: str, bash_exe: str = "") -> str:
+    # TODO(#5): Isolate shell/path translation behind a shell adapter layer.
+    # Windows, Git Bash, and Cygwin compatibility logic is mixed into the core
+    # dispatcher, which makes the module harder to reason about than it should be.
     if os.name != "nt":
         return windows_path
 
@@ -371,6 +387,9 @@ def _click_type(type_str: str):
 
 
 def _make_command(script_path: str, cmd_name: str, sidecar: dict) -> click.Command:
+    # TODO(#6): Split command spec parsing from Click object construction. This
+    # function currently validates sidecar semantics, maps them to Click types,
+    # and wires subprocess execution in one place, which is doing too much.
     interp = _interpreter(script_path)
     desc = sidecar.get("description", "").strip()
     arg_specs = sidecar.get("args") or []
@@ -442,6 +461,9 @@ def _make_command(script_path: str, cmd_name: str, sidecar: dict) -> click.Comma
 
     def make_callback(path: str, interp_: list[str], specs: list[dict]):
         def callback(**kwargs):
+            # TODO(#7): Return subprocess exit codes instead of calling sys.exit from
+            # nested callbacks. This works for the current CLI-only model, but it
+            # makes embedding or reusing the dispatcher from Python awkward.
             bash_exe = interp_[0] if interp_ else ""
             exec_path = (
                 _to_bash_path(path, bash_exe)
@@ -508,6 +530,9 @@ def _group_path_and_cmd(registry_entry: str, aliases: dict[str, str]) -> tuple[l
 
 
 def _discover_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[dict]:
+    # TODO(#8): This should become a pure discovery phase that reports structured
+    # diagnostics instead of printing via Click while traversing the repo.
+    # Mixing discovery, validation, and user I/O makes caching and reuse clumsy.
     discovered: list[dict] = []
 
     for entry in registry:
@@ -566,6 +591,9 @@ def _refresh_cache() -> None:
 
 
 def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
+    # TODO(#9): Build a declarative command tree first, then render it into Click.
+    # Right now the tree is mutated directly on the global Click group, which is
+    # serviceable for one process but awkward for caching and introspection.
     groups: dict[tuple[str, ...], click.Group] = {}
 
     def get_or_create_group(name_parts: list[str]) -> click.Group:
@@ -636,6 +664,9 @@ def cli():
 
 _INITIAL_ALIASES = _load_aliases()
 _build_cli_tree(_load_cli_entries(_read_registry(), _INITIAL_ALIASES), _INITIAL_ALIASES)
+# TODO(#10): Avoid import-time CLI tree construction. It speeds up the "single file
+# script" model, but it also means import has side effects and front-loads work
+# even for commands that only need core maintenance operations.
 
 
 @cli.group("core")
@@ -838,6 +869,9 @@ def install_completion(shell: str):
     # user's Bash installation when merely printing the completion script.
     source = ShellComplete.source(comp).replace("\r\n", "\n").replace("\r", "\n")
     if shell == "bash":
+        # TODO(#11): Stop patching upstream Click output with string replacement.
+        # This is pragmatic for now, but a custom completion emitter would be
+        # more explicit and less brittle than editing generated shell text.
         source = source.replace("$(env ", "$(")
     sys.stdout.write(source)
     sys.stdout.flush()
