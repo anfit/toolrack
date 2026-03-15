@@ -695,15 +695,48 @@ def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
             cli.add_command(cmd)
 
 
-@click.group()
+_STATIC_COMMANDS = {"core"}
+_DYNAMIC_CLI_SIGNATURE: str | None = None
+
+
+def _clear_dynamic_cli_tree() -> None:
+    for name in list(cli.commands.keys()):
+        if name not in _STATIC_COMMANDS:
+            cli.commands.pop(name)
+
+
+def _ensure_cli_tree() -> None:
+    global _DYNAMIC_CLI_SIGNATURE
+
+    repo = _current_repo()
+    registry = _read_registry(repo)
+    signature = _cache_signature(registry, repo)
+    if _DYNAMIC_CLI_SIGNATURE == signature:
+        return
+
+    _clear_dynamic_cli_tree()
+    aliases = _load_aliases(repo)
+    _build_cli_tree(_load_cli_entries(registry, aliases, repo), aliases)
+    _DYNAMIC_CLI_SIGNATURE = signature
+
+
+class RuntimeCLIGroup(click.Group):
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        if cmd_name not in self.commands:
+            _ensure_cli_tree()
+        return super().get_command(ctx, cmd_name)
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        _ensure_cli_tree()
+        return super().list_commands(ctx)
+
+
+@click.group(cls=RuntimeCLIGroup)
 @click.version_option(prog_name=CLI_NAME)
 def cli():
     """Typed dispatcher for a user-owned scripts repository."""
 
 
-_INITIAL_REPO = _current_repo()
-_INITIAL_ALIASES = _load_aliases(_INITIAL_REPO)
-_build_cli_tree(_load_cli_entries(_read_registry(_INITIAL_REPO), _INITIAL_ALIASES, _INITIAL_REPO), _INITIAL_ALIASES)
 # TODO(#10): Avoid import-time CLI tree construction. It speeds up the "single file
 # script" model, but it also means import has side effects and front-loads work
 # even for commands that only need core maintenance operations.

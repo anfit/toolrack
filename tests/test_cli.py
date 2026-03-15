@@ -11,6 +11,8 @@ Covers:
 import json
 import ntpath
 import os
+import subprocess
+import sys
 import pytest
 
 import toolrack.cli as cli
@@ -556,12 +558,52 @@ def _register_in_tmp(rel_script_path: str):
 
 
 def _reload_tree():
-    builtins = {"core"}
-    for name in list(cli.cli.commands.keys()):
-        if name not in builtins:
-            cli.cli.commands.pop(name)
-    aliases = _load_aliases()
-    _build_cli_tree(cli._load_cli_entries(_read_registry(), aliases), aliases)
+    cli._DYNAMIC_CLI_SIGNATURE = None
+    cli._clear_dynamic_cli_tree()
+    cli._ensure_cli_tree()
+
+
+class TestLazySetup:
+
+    def test_import_does_not_load_aliases_or_build_dynamic_commands(self, repo):
+        repo["registry"].write_text("scripts/github/check_review.py\n", encoding="utf-8")
+        repo["aliases"].write_text("[groups]\nfoo = bar\nbaz = bar\n", encoding="utf-8")
+
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.path.dirname(os.path.dirname(cli.__file__))
+        env["TOOLRACK_REPO_ROOT"] = str(repo["root"])
+        env["TOOLRACK_SCRIPTS_ROOT"] = str(repo["scripts"])
+        env["TOOLRACK_REGISTRY_FILE"] = str(repo["registry"])
+        env["TOOLRACK_CACHE_FILE"] = str(repo["cache"])
+        env["TOOLRACK_ALIASES_FILE"] = str(repo["aliases"])
+
+        result = subprocess.run(
+            [sys.executable, "-c", "import toolrack.cli"],
+            cwd=repo["root"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+    def test_core_command_does_not_require_dynamic_tree(self, repo, runner):
+        repo["aliases"].write_text("[groups]\nfoo = bar\nbaz = bar\n", encoding="utf-8")
+        result = runner.invoke(cli.cli, ["core", "list"])
+        assert result.exit_code == 0, result.output
+        assert "No scripts registered" in result.output
+
+    def test_dynamic_command_lookup_builds_tree_on_demand(
+            self, repo, runner, make_script, make_sidecar):
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "Check a review."})
+        _register_in_tmp("github/check_review.py")
+        cli._clear_dynamic_cli_tree()
+        cli._DYNAMIC_CLI_SIGNATURE = None
+
+        result = runner.invoke(cli.cli, ["github", "check-review", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "Check a review" in result.output
 
 
 class TestCommandTree:
