@@ -30,8 +30,12 @@ DEFAULT_REGISTRY_BASENAME = os.environ.get("TOOLRACK_REGISTRY_BASENAME") or ".to
 # the way once toolrack is used as an installed library as well as a checkout.
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _fix_windows_completion_crlf() -> None:
-    if os.name != "nt":
+    if not _is_windows():
         return
     if not os.environ.get(COMPLETION_VAR):
         return
@@ -60,7 +64,7 @@ def _registry_candidates() -> list[str]:
 
 def _normalize_env_path(value: str | None) -> str | None:
     """Map Git Bash / Cygwin Windows mount paths back to native Windows paths."""
-    if not value or os.name != "nt":
+    if not value or not _is_windows():
         return value
 
     normalized = value.replace("\\", "/")
@@ -307,7 +311,7 @@ def _to_bash_path(windows_path: str, bash_exe: str = "") -> str:
     # TODO(#5): Isolate shell/path translation behind a shell adapter layer.
     # Windows, Git Bash, and Cygwin compatibility logic is mixed into the core
     # dispatcher, which makes the module harder to reason about than it should be.
-    if os.name != "nt":
+    if not _is_windows():
         return windows_path
 
     cygpath_candidates: list[str] = []
@@ -340,7 +344,7 @@ def _to_bash_path(windows_path: str, bash_exe: str = "") -> str:
 
 
 def _resolve_bash_exe() -> str:
-    if os.name != "nt":
+    if not _is_windows():
         return "bash"
 
     cygwin_bash = r"C:\cygwin64\bin\bash.exe"

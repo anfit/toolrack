@@ -8,8 +8,9 @@ Covers:
   - CLI commands: register, unregister, list, reregister
   - Command-tree building: groups, aliases, --help content, env section, choices
 """
-import os
 import json
+import ntpath
+import os
 import pytest
 
 import toolrack.cli as cli
@@ -28,7 +29,10 @@ from toolrack.cli import (
 
 
 def _sample_windows_path(*parts: str) -> str:
-    return os.path.normpath(os.path.join("C:\\", *parts))
+    path = "C:\\"
+    for part in parts:
+        path = ntpath.join(path, part)
+    return ntpath.normpath(path)
 
 
 # ===========================================================================
@@ -89,17 +93,17 @@ class TestResolvePath:
 class TestEnvPathNormalization:
 
     def test_returns_input_unchanged_off_windows(self, monkeypatch):
-        monkeypatch.setattr(cli.os, "name", "posix")
+        monkeypatch.setattr(cli, "_is_windows", lambda: False)
         sample = "/cygdrive/c/example/tools/.toolrack"
         assert _normalize_env_path(sample) == sample
 
     def test_converts_cygwin_drive_path_on_windows(self, monkeypatch):
-        monkeypatch.setattr(cli.os, "name", "nt")
+        monkeypatch.setattr(cli, "_is_windows", lambda: True)
         result = _normalize_env_path("/cygdrive/c/example/tools/.toolrack")
         assert result == _sample_windows_path("example", "tools", ".toolrack")
 
     def test_converts_git_bash_drive_path_on_windows(self, monkeypatch):
-        monkeypatch.setattr(cli.os, "name", "nt")
+        monkeypatch.setattr(cli, "_is_windows", lambda: True)
         result = _normalize_env_path("/c/example/tools/scripts")
         assert result == _sample_windows_path("example", "tools", "scripts")
 
