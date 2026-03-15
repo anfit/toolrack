@@ -15,6 +15,7 @@ import pytest
 
 import toolrack.cli as cli
 from toolrack.cli import (
+    RepositoryContext,
     _read_registry,
     _write_registry,
     _resolve_script_path,
@@ -60,6 +61,17 @@ class TestRegistry:
         _write_registry(["scripts/a.py"])
         _write_registry(["scripts/b.py"])
         assert _read_registry() == ["scripts/b.py"]
+
+    def test_read_and_write_can_use_explicit_repository_context(self, repo):
+        explicit_repo = RepositoryContext(
+            repo_root=str(repo["root"]),
+            scripts_root=str(repo["scripts"]),
+            registry_file=str(repo["registry"]),
+            cache_file=str(repo["cache"]),
+            aliases_file=str(repo["aliases"]),
+        )
+        _write_registry(["scripts/a.py"], explicit_repo)
+        assert _read_registry(explicit_repo) == ["scripts/a.py"]
 
 
 # ===========================================================================
