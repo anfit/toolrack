@@ -15,6 +15,9 @@ import pytest
 
 import toolrack.cli as cli
 from toolrack.cli import (
+    CommandArgSpec,
+    CommandEnvSpec,
+    CommandSpec,
     RepositoryContext,
     _read_registry,
     _write_registry,
@@ -26,6 +29,8 @@ from toolrack.cli import (
     _validate_sidecar,
     _load_aliases,
     _build_cli_tree,
+    _command_spec,
+    _help_epilog,
 )
 
 
@@ -282,6 +287,127 @@ class TestAliases:
         aliases_cfg({"environments": "env", "extras": "env"})
         with pytest.raises(RuntimeError, match="collision"):
             _load_aliases()
+
+
+# ===========================================================================
+# Command spec parsing
+# ===========================================================================
+
+class TestCommandSpec:
+
+    def test_parses_sidecar_into_click_free_command_spec(self, make_script):
+        path = make_script("github/check_review.py")
+        spec = _command_spec(path, "check-review", {
+            "description": "  Check a review.  ",
+            "args": [
+                {"name": "pr", "type": "int", "required": True, "help": "PR number."},
+                {
+                    "name": "labels",
+                    "multiple": True,
+                    "option": "--label",
+                    "choices": ["bug", "docs"],
+                },
+                {"name": "verbose", "flag": True, "type": "bool"},
+                {"name": "paths", "positional": True, "variadic": True, "help": "Paths."},
+            ],
+            "env": [{"name": "GITHUB_TOKEN", "help": "Access token.", "required": True}],
+            "epilog": "  Extra notes.  ",
+        })
+        assert spec == CommandSpec(
+            script_path=path,
+            command_name="check-review",
+            interpreter=(cli.sys.executable,),
+            description="Check a review.",
+            args=(
+                CommandArgSpec(
+                    name="pr",
+                    positional=False,
+                    flag=False,
+                    multiple=False,
+                    variadic=False,
+                    required=True,
+                    default=None,
+                    choices=(),
+                    help="PR number.",
+                    option=None,
+                    type_name="int",
+                ),
+                CommandArgSpec(
+                    name="labels",
+                    positional=False,
+                    flag=False,
+                    multiple=True,
+                    variadic=False,
+                    required=False,
+                    default=None,
+                    choices=("bug", "docs"),
+                    help="",
+                    option="--label",
+                    type_name="string",
+                ),
+                CommandArgSpec(
+                    name="verbose",
+                    positional=False,
+                    flag=True,
+                    multiple=False,
+                    variadic=False,
+                    required=False,
+                    default=None,
+                    choices=(),
+                    help="",
+                    option=None,
+                    type_name="bool",
+                ),
+                CommandArgSpec(
+                    name="paths",
+                    positional=True,
+                    flag=False,
+                    multiple=False,
+                    variadic=True,
+                    required=True,
+                    default=None,
+                    choices=(),
+                    help="Paths.",
+                    option=None,
+                    type_name="string",
+                ),
+            ),
+            env=(
+                CommandEnvSpec(
+                    name="GITHUB_TOKEN",
+                    help="Access token.",
+                    default=None,
+                    required=True,
+                ),
+            ),
+            epilog="Extra notes.",
+        )
+
+    def test_positional_required_defaults_true_and_option_false(self, make_script):
+        path = make_script("jira/update.py")
+        spec = _command_spec(path, "update", {
+            "args": [
+                {"name": "issue", "positional": True},
+                {"name": "output"},
+            ]
+        })
+        assert spec.args[0].required is True
+        assert spec.args[1].required is False
+
+    def test_help_epilog_formats_env_and_freeform_sections(self):
+        epilog = _help_epilog(
+            (
+                CommandEnvSpec("PGHOST", "Database host.", "db.local", False),
+                CommandEnvSpec("PGUSER", "", None, True),
+            ),
+            "More details.",
+        )
+        assert epilog == (
+            "Environment variables:\n"
+            "  PGHOST  Database host.  [default: db.local]\n"
+            "  PGUSER  [required]\n\n"
+            "More details."
+        )
 
 
 # ===========================================================================
