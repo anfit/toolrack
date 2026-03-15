@@ -9,6 +9,7 @@ import ntpath
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 
 import click
 
@@ -112,19 +113,35 @@ CACHE_FILE = _normalize_env_path(os.environ.get("TOOLRACK_CACHE_FILE")) or (REGI
 ALIASES_FILE = _normalize_env_path(os.environ.get("TOOLRACK_ALIASES_FILE")) or os.path.join(
     REPO_ROOT, "aliases.cfg"
 )
-# TODO(#2): Replace the module-level repository state with a repository/session
-# object. Right now path resolution, cache settings, and CLI construction are
-# all coupled to global variables, which is convenient for a checkout but weak
-# for multi-repo usage, packaging, and reuse from other Python entry points.
+
+
+@dataclass(frozen=True)
+class RepositoryContext:
+    repo_root: str
+    scripts_root: str
+    registry_file: str
+    cache_file: str
+    aliases_file: str
+
+
+def _current_repo() -> RepositoryContext:
+    return RepositoryContext(
+        repo_root=REPO_ROOT,
+        scripts_root=SCRIPTS_ROOT,
+        registry_file=REGISTRY_FILE,
+        cache_file=CACHE_FILE,
+        aliases_file=ALIASES_FILE,
+    )
 
 _SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
 _RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
 
 
-def _read_registry() -> list[str]:
-    if not os.path.isfile(REGISTRY_FILE):
+def _read_registry(repo: RepositoryContext | None = None) -> list[str]:
+    repo = repo or _current_repo()
+    if not os.path.isfile(repo.registry_file):
         return []
-    with open(REGISTRY_FILE, encoding="utf-8") as handle:
+    with open(repo.registry_file, encoding="utf-8") as handle:
         return [
             line.strip()
             for line in handle
@@ -132,26 +149,29 @@ def _read_registry() -> list[str]:
         ]
 
 
-def _write_registry(paths: list[str]) -> None:
-    with open(REGISTRY_FILE, "w", encoding="utf-8") as handle:
+def _write_registry(paths: list[str], repo: RepositoryContext | None = None) -> None:
+    repo = repo or _current_repo()
+    with open(repo.registry_file, "w", encoding="utf-8") as handle:
         for path in paths:
             handle.write(path + "\n")
 
 
-def _resolve_script_path(raw: str) -> str:
+def _resolve_script_path(raw: str, repo: RepositoryContext | None = None) -> str:
+    repo = repo or _current_repo()
     if os.path.isabs(raw):
         p = os.path.abspath(raw)
     else:
-        repo_candidate = os.path.join(REPO_ROOT, raw)
+        repo_candidate = os.path.join(repo.repo_root, raw)
         p = os.path.abspath(repo_candidate if os.path.exists(repo_candidate) else raw)
     try:
-        return os.path.relpath(p, REPO_ROOT).replace(os.sep, "/")
+        return os.path.relpath(p, repo.repo_root).replace(os.sep, "/")
     except ValueError:
         return p.replace(os.sep, "/")
 
 
-def _abs_script_path(registry_entry: str) -> str:
-    return os.path.normpath(os.path.join(REPO_ROOT, registry_entry))
+def _abs_script_path(registry_entry: str, repo: RepositoryContext | None = None) -> str:
+    repo = repo or _current_repo()
+    return os.path.normpath(os.path.join(repo.repo_root, registry_entry))
 
 
 def _file_state(path: str) -> dict[str, int | bool]:
@@ -162,23 +182,24 @@ def _file_state(path: str) -> dict[str, int | bool]:
     return {"exists": True, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
-def _cache_signature(registry: list[str]) -> str:
+def _cache_signature(registry: list[str], repo: RepositoryContext | None = None) -> str:
+    repo = repo or _current_repo()
     # TODO(#3): Promote cached entry payloads to typed models instead of raw dicts.
     # The current JSON contract is convenient but fragile: field names are
     # unchecked, easy to drift, and spread across multiple helpers.
     payload = {
-        "repo_root": REPO_ROOT,
-        "scripts_root": SCRIPTS_ROOT,
-        "registry_file": REGISTRY_FILE,
-        "aliases_file": ALIASES_FILE,
+        "repo_root": repo.repo_root,
+        "scripts_root": repo.scripts_root,
+        "registry_file": repo.registry_file,
+        "aliases_file": repo.aliases_file,
         "registry": registry,
-        "registry_state": _file_state(REGISTRY_FILE),
-        "aliases_state": _file_state(ALIASES_FILE),
+        "registry_state": _file_state(repo.registry_file),
+        "aliases_state": _file_state(repo.aliases_file),
         "entries": [
             {
                 "registry_entry": entry,
-                "script_state": _file_state(_abs_script_path(entry)),
-                "sidecar_state": _file_state(_sidecar_path(_abs_script_path(entry))),
+                "script_state": _file_state(_abs_script_path(entry, repo)),
+                "sidecar_state": _file_state(_sidecar_path(_abs_script_path(entry, repo))),
             }
             for entry in registry
         ],
@@ -186,15 +207,16 @@ def _cache_signature(registry: list[str]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _read_cache(registry: list[str]) -> list[dict] | None:
-    if not os.path.isfile(CACHE_FILE):
+def _read_cache(registry: list[str], repo: RepositoryContext | None = None) -> list[dict] | None:
+    repo = repo or _current_repo()
+    if not os.path.isfile(repo.cache_file):
         return None
     try:
-        with open(CACHE_FILE, encoding="utf-8") as handle:
+        with open(repo.cache_file, encoding="utf-8") as handle:
             payload = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return None
-    if payload.get("signature") != _cache_signature(registry):
+    if payload.get("signature") != _cache_signature(registry, repo):
         return None
     entries = payload.get("entries")
     if not isinstance(entries, list):
@@ -202,27 +224,31 @@ def _read_cache(registry: list[str]) -> list[dict] | None:
     return entries
 
 
-def _write_cache(registry: list[str], entries: list[dict]) -> None:
-    cache_dir = os.path.dirname(CACHE_FILE)
+def _write_cache(
+    registry: list[str], entries: list[dict], repo: RepositoryContext | None = None
+) -> None:
+    repo = repo or _current_repo()
+    cache_dir = os.path.dirname(repo.cache_file)
     if cache_dir:
         os.makedirs(cache_dir, exist_ok=True)
     payload = {
-        "signature": _cache_signature(registry),
+        "signature": _cache_signature(registry, repo),
         "entries": entries,
     }
-    with open(CACHE_FILE, "w", encoding="utf-8") as handle:
+    with open(repo.cache_file, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)
         handle.write("\n")
 
 
-def _load_aliases() -> dict[str, str]:
+def _load_aliases(repo: RepositoryContext | None = None) -> dict[str, str]:
+    repo = repo or _current_repo()
     cfg = configparser.ConfigParser()
     # TODO(#4): Merge registry/cache/aliases metadata into one top-level repo
     # manifest object. These files are now conceptually related, but the code
     # still treats them as separate incidental globals.
-    if not os.path.isfile(ALIASES_FILE):
+    if not os.path.isfile(repo.aliases_file):
         return {}
-    cfg.read(ALIASES_FILE)
+    cfg.read(repo.aliases_file)
     if not cfg.has_section("groups"):
         return {}
 
@@ -521,8 +547,10 @@ def _script_cli_name(filename: str) -> str:
     return _to_cli_name(os.path.splitext(filename)[0])
 
 
-def _group_path_and_cmd(registry_entry: str, aliases: dict[str, str]) -> tuple[list[str], str, str]:
-    abs_path = _abs_script_path(registry_entry)
+def _group_path_and_cmd(
+    registry_entry: str, aliases: dict[str, str], repo: RepositoryContext | None = None
+) -> tuple[list[str], str, str]:
+    abs_path = _abs_script_path(registry_entry, repo)
     parts = registry_entry.replace("\\", "/").split("/")
     if parts[0] == "scripts":
         parts = parts[1:]
@@ -533,14 +561,17 @@ def _group_path_and_cmd(registry_entry: str, aliases: dict[str, str]) -> tuple[l
     return resolved, cmd_name, abs_path
 
 
-def _discover_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[dict]:
+def _discover_cli_entries(
+    registry: list[str], aliases: dict[str, str], repo: RepositoryContext | None = None
+) -> list[dict]:
+    repo = repo or _current_repo()
     # TODO(#8): This should become a pure discovery phase that reports structured
     # diagnostics instead of printing via Click while traversing the repo.
     # Mixing discovery, validation, and user I/O makes caching and reuse clumsy.
     discovered: list[dict] = []
 
     for entry in registry:
-        abs_path = _abs_script_path(entry)
+        abs_path = _abs_script_path(entry, repo)
         if not os.path.isfile(abs_path):
             click.echo(f"[{CLI_NAME}] warning: registered script not found: {entry}", err=True)
             continue
@@ -559,7 +590,7 @@ def _discover_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[
             click.echo(f"[{CLI_NAME}] skipping {entry}: {exc}", err=True)
             continue
 
-        group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases)
+        group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases, repo)
         discovered.append(
             {
                 "entry": entry,
@@ -573,23 +604,27 @@ def _discover_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[
     return discovered
 
 
-def _load_cli_entries(registry: list[str], aliases: dict[str, str]) -> list[dict]:
-    cached = _read_cache(registry)
+def _load_cli_entries(
+    registry: list[str], aliases: dict[str, str], repo: RepositoryContext | None = None
+) -> list[dict]:
+    repo = repo or _current_repo()
+    cached = _read_cache(registry, repo)
     if cached is not None:
         return cached
-    discovered = _discover_cli_entries(registry, aliases)
+    discovered = _discover_cli_entries(registry, aliases, repo)
     try:
-        _write_cache(registry, discovered)
+        _write_cache(registry, discovered, repo)
     except OSError:
         pass
     return discovered
 
 
-def _refresh_cache() -> None:
+def _refresh_cache(repo: RepositoryContext | None = None) -> None:
+    repo = repo or _current_repo()
     try:
-        registry = _read_registry()
-        aliases = _load_aliases()
-        _write_cache(registry, _discover_cli_entries(registry, aliases))
+        registry = _read_registry(repo)
+        aliases = _load_aliases(repo)
+        _write_cache(registry, _discover_cli_entries(registry, aliases, repo), repo)
     except (OSError, RuntimeError):
         return
 
@@ -666,8 +701,9 @@ def cli():
     """Typed dispatcher for a user-owned scripts repository."""
 
 
-_INITIAL_ALIASES = _load_aliases()
-_build_cli_tree(_load_cli_entries(_read_registry(), _INITIAL_ALIASES), _INITIAL_ALIASES)
+_INITIAL_REPO = _current_repo()
+_INITIAL_ALIASES = _load_aliases(_INITIAL_REPO)
+_build_cli_tree(_load_cli_entries(_read_registry(_INITIAL_REPO), _INITIAL_ALIASES, _INITIAL_REPO), _INITIAL_ALIASES)
 # TODO(#10): Avoid import-time CLI tree construction. It speeds up the "single file
 # script" model, but it also means import has side effects and front-loads work
 # even for commands that only need core maintenance operations.
@@ -682,8 +718,9 @@ def core():
 @click.argument("script_path")
 def cmd_register(script_path: str):
     """Register a script as a CLI subcommand."""
-    canonical = _resolve_script_path(script_path)
-    abs_path = _abs_script_path(canonical)
+    repo = _current_repo()
+    canonical = _resolve_script_path(script_path, repo)
+    abs_path = _abs_script_path(canonical, repo)
 
     if not os.path.isfile(abs_path):
         raise click.ClickException(f"Script not found: {abs_path}")
@@ -712,14 +749,14 @@ def cmd_register(script_path: str):
         except RuntimeError as exc:
             raise click.ClickException(str(exc))
 
-    registry = _read_registry()
+    registry = _read_registry(repo)
     if canonical in registry:
         click.echo(f"Already registered: {canonical}")
         return
 
     registry.append(canonical)
-    _write_registry(registry)
-    _refresh_cache()
+    _write_registry(registry, repo)
+    _refresh_cache(repo)
     click.echo(f"Registered: {canonical}")
 
 
@@ -727,13 +764,14 @@ def cmd_register(script_path: str):
 @click.option("--dry-run", is_flag=True, help="Show what would be registered without writing.")
 def cmd_auto_register(dry_run: bool):
     """Scan scripts/ for sidecar+script pairs and register unregistered ones."""
-    registry = _read_registry()
+    repo = _current_repo()
+    registry = _read_registry(repo)
     registry_set = set(registry)
     added: list[str] = []
     skipped: list[str] = []
     failures: list[tuple[str, str]] = []
 
-    for dirpath, dirnames, filenames in os.walk(SCRIPTS_ROOT):
+    for dirpath, dirnames, filenames in os.walk(repo.scripts_root):
         dirnames[:] = sorted(
             dirname for dirname in dirnames if dirname not in _SKIP_DIRS and not dirname.startswith(".")
         )
@@ -750,7 +788,7 @@ def cmd_auto_register(dry_run: bool):
             if script_path is None:
                 continue
 
-            canonical = _resolve_script_path(script_path)
+            canonical = _resolve_script_path(script_path, repo)
             if canonical in registry_set:
                 skipped.append(canonical)
                 continue
@@ -771,8 +809,8 @@ def cmd_auto_register(dry_run: bool):
                 registry_set.add(canonical)
 
     if not dry_run:
-        _write_registry(registry)
-        _refresh_cache()
+        _write_registry(registry, repo)
+        _refresh_cache(repo)
 
     prefix = "[dry-run] " if dry_run else ""
     for canonical in skipped:
@@ -790,31 +828,33 @@ def cmd_auto_register(dry_run: bool):
 @click.argument("script_path")
 def cmd_unregister(script_path: str):
     """Remove a script from the registry."""
-    canonical = _resolve_script_path(script_path)
-    registry = _read_registry()
+    repo = _current_repo()
+    canonical = _resolve_script_path(script_path, repo)
+    registry = _read_registry(repo)
 
     if canonical not in registry:
         raise click.ClickException(f"Not registered: {canonical}")
 
     registry.remove(canonical)
-    _write_registry(registry)
-    _refresh_cache()
+    _write_registry(registry, repo)
+    _refresh_cache(repo)
     click.echo(f"Unregistered: {canonical}")
 
 
 @core.command("reregister")
 def cmd_reregister():
     """Re-validate all registered commands."""
-    registry = _read_registry()
+    repo = _current_repo()
+    registry = _read_registry(repo)
     if not registry:
         click.echo("Nothing registered.")
         return
 
-    _load_aliases()
+    _load_aliases(repo)
     ok = 0
     errors = 0
     for entry in registry:
-        abs_path = _abs_script_path(entry)
+        abs_path = _abs_script_path(entry, repo)
         if not os.path.isfile(abs_path):
             click.echo(f"  MISSING  {entry}", err=True)
             errors += 1
@@ -835,26 +875,28 @@ def cmd_reregister():
             click.echo(f"  ERROR    {entry}: {exc}", err=True)
             errors += 1
 
-    _refresh_cache()
+    _refresh_cache(repo)
     click.echo(f"\n{ok} ok, {errors} errors.")
 
 
 @core.command("refresh-cache")
 def cmd_refresh_cache():
     """Rebuild the command metadata cache next to the registry."""
-    _refresh_cache()
-    click.echo(f"Refreshed cache: {CACHE_FILE}")
+    repo = _current_repo()
+    _refresh_cache(repo)
+    click.echo(f"Refreshed cache: {repo.cache_file}")
 
 
 @core.command("list")
 def cmd_list():
     """List all registered scripts."""
-    registry = _read_registry()
+    repo = _current_repo()
+    registry = _read_registry(repo)
     if not registry:
         click.echo(f"No scripts registered. Use: {CLI_NAME} core register <script_path>")
         return
     for entry in registry:
-        abs_path = _abs_script_path(entry)
+        abs_path = _abs_script_path(entry, repo)
         status = "ok" if os.path.isfile(abs_path) else "MISSING"
         sidecar_exists = os.path.isfile(_sidecar_path(abs_path))
         sidecar_tag = "" if sidecar_exists else "  [no sidecar]"
