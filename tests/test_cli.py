@@ -26,6 +26,9 @@ from toolrack.cli import (
     _validate_sidecar,
     _load_aliases,
     _build_cli_tree,
+    _read_cache,
+    _write_cache,
+    _file_state,
 )
 
 
@@ -118,6 +121,69 @@ class TestEnvPathNormalization:
         monkeypatch.setattr(cli, "_is_windows", lambda: True)
         result = _normalize_env_path("/c/example/tools/scripts")
         assert result == _sample_windows_path("example", "tools", "scripts")
+
+
+class TestRepoRootDiscovery:
+
+    def test_find_repo_root_prefers_registry_marker(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        nested = root / "scripts" / "deep"
+        nested.mkdir(parents=True)
+        (root / ".toolrack").write_text("", encoding="utf-8")
+        monkeypatch.chdir(nested)
+        assert cli._find_repo_root() == str(root)
+
+    def test_find_repo_root_falls_back_to_git_dir(self, tmp_path, monkeypatch):
+        root = tmp_path / "repo"
+        nested = root / "scripts" / "deep"
+        nested.mkdir(parents=True)
+        (root / ".git").mkdir()
+        monkeypatch.chdir(nested)
+        assert cli._find_repo_root() == str(root)
+
+
+class TestCacheMetadata:
+
+    def test_file_state_reports_absent_path(self, repo):
+        missing = repo["root"] / "missing.py"
+        assert _file_state(str(missing)) == {"exists": False, "size": 0, "mtime_ns": 0}
+
+    def test_cache_roundtrip_with_matching_signature(self, repo, make_script, make_sidecar):
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "ok"})
+        registry = ["scripts/github/check_review.py"]
+        entries = [{"entry": "scripts/github/check_review.py", "cmd_name": "check-review"}]
+        _write_cache(registry, entries)
+        assert _read_cache(registry) == entries
+
+    def test_read_cache_returns_none_when_signature_changes(self, repo, make_script, make_sidecar):
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "ok"})
+        old_registry = ["scripts/github/check_review.py"]
+        _write_cache(old_registry, [{"entry": old_registry[0]}])
+        assert _read_cache(["scripts/github/other.py"]) is None
+
+    def test_read_cache_returns_none_on_invalid_json(self, repo):
+        repo["cache"].write_text("not-json", encoding="utf-8")
+        assert _read_cache([]) is None
+
+
+class TestTypeMapping:
+
+    @pytest.mark.parametrize(
+        "type_name, expected",
+        [
+            ("int", "IntParamType"),
+            ("float", "FloatParamType"),
+            ("bool", "BoolParamType"),
+            ("path", "Path"),
+            ("string", "StringParamType"),
+            ("unknown", "StringParamType"),
+        ],
+    )
+    def test_click_type_resolution(self, type_name, expected):
+        resolved = cli._click_type(type_name)
+        assert type(resolved).__name__ == expected
 
 
 # ===========================================================================
@@ -736,7 +802,9 @@ class TestDeploymentConfig:
         assert "$(_MY_TOOLS_COMPLETE" not in result.output or "_MY_TOOLS_COMPLETE" in result.output
 
     def test_completion_returns_choice_values_for_typed_option(
-            self, repo, runner, make_script, make_sidecar):
+            self, repo, make_script, make_sidecar, monkeypatch):
+        from click.shell_completion import BashComplete
+
         make_script("jira/update.py")
         make_sidecar("jira/update.py", {
             "description": "Update issues.",
@@ -744,11 +812,10 @@ class TestDeploymentConfig:
         })
         _register_in_tmp("jira/update.py")
         _reload_tree()
-        env = {
-            cli.COMPLETION_VAR: "bash_complete",
-            "COMP_WORDS": "toolrack jira update --output j",
-            "COMP_CWORD": "4",
-        }
-        result = runner.invoke(cli.cli, [], env=env, prog_name="toolrack")
-        assert result.exit_code == 0, result.output
-        assert "plain,json" in result.output
+
+        monkeypatch.setenv("COMP_WORDS", "toolrack jira update --output j")
+        monkeypatch.setenv("COMP_CWORD", "4")
+
+        completion = BashComplete(cli.cli, {}, "toolrack", cli.COMPLETION_VAR)
+        result = completion.complete()
+        assert "plain,json" in result
