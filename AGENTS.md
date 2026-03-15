@@ -73,3 +73,17 @@ pytest -m integration -s            # cross-shell integration tests
 ### Test isolation
 
 `conftest.py` provides a `repo` fixture that monkeypatches `toolrack.cli.REPO_ROOT`, `SCRIPTS_ROOT`, and `REGISTRY_FILE` to `tmp_path`. Tests never touch the real `.attic`.
+
+---
+
+## Issue resolution procedure
+
+When working an issue from GitHub, use this sequence unless the issue says otherwise:
+
+1. Read the issue directly in GitHub and restate the expected behavior before editing code.
+2. Inspect `src/toolrack/cli.py` and the most relevant tests in `tests/test_cli.py` or `tests/test_cross_shell.py`.
+3. Prefer a narrow change first, but keep the design direction requested by the issue in mind.
+4. Add or update tests for the behavior being changed before closing out the work.
+5. Run `pytest` locally. If only part of the suite is relevant during iteration, finish with the default `pytest` command before opening a PR.
+6. Commit the implementation on an issue branch, push it, and open a PR that links the issue and summarizes testing.
+7. If the work changes team process or repo conventions, follow up with a separate documentation change on `main` so the implementation PR stays focused.
