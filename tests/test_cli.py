@@ -600,6 +600,29 @@ class TestCommandTree:
         assert result2.exit_code == 0
         assert "Status" in result2.output
 
+    def test_original_folder_name_redirects_to_alias_when_alias_exists(
+            self, repo, runner, make_script, make_sidecar, aliases_cfg):
+        aliases_cfg({"environments": "env"})
+        make_script("environments/get_status.sh")
+        make_sidecar("environments/get_status.sh", {"description": "Status."})
+        _register_in_tmp("environments/get_status.sh")
+        _reload_tree()
+        result = runner.invoke(cli.cli, ["environments", "--help"])
+        assert result.exit_code == 0
+        assert "Alias; use 'env' instead." in result.output
+
+    def test_original_folder_name_is_hidden_from_top_level_help(
+            self, repo, runner, make_script, make_sidecar, aliases_cfg):
+        aliases_cfg({"environments": "env"})
+        make_script("environments/get_status.sh")
+        make_sidecar("environments/get_status.sh", {"description": "Status."})
+        _register_in_tmp("environments/get_status.sh")
+        _reload_tree()
+        result = runner.invoke(cli.cli, ["--help"])
+        assert result.exit_code == 0
+        assert "env" in result.output
+        assert "  environments" not in result.output
+
     def test_env_vars_shown_in_help_epilog(
             self, repo, runner, make_script, make_sidecar):
         make_script("db/query.sh")
