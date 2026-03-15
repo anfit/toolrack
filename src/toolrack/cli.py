@@ -124,6 +124,40 @@ class RepositoryContext:
     aliases_file: str
 
 
+@dataclass(frozen=True)
+class CommandArgSpec:
+    name: str
+    positional: bool
+    flag: bool
+    multiple: bool
+    variadic: bool
+    required: bool
+    default: object
+    choices: tuple[str, ...]
+    help: str
+    option: str | None
+    type_name: str
+
+
+@dataclass(frozen=True)
+class CommandEnvSpec:
+    name: str
+    help: str
+    default: object
+    required: bool
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    script_path: str
+    command_name: str
+    interpreter: tuple[str, ...]
+    description: str
+    args: tuple[CommandArgSpec, ...]
+    env: tuple[CommandEnvSpec, ...]
+    epilog: str
+
+
 def _current_repo() -> RepositoryContext:
     return RepositoryContext(
         repo_root=REPO_ROOT,
@@ -416,126 +450,141 @@ def _click_type(type_str: str):
     }.get(type_str, click.STRING)
 
 
-def _make_command(script_path: str, cmd_name: str, sidecar: dict) -> click.Command:
-    # TODO(#6): Split command spec parsing from Click object construction. This
-    # function currently validates sidecar semantics, maps them to Click types,
-    # and wires subprocess execution in one place, which is doing too much.
-    interp = _interpreter(script_path)
-    desc = sidecar.get("description", "").strip()
-    arg_specs = sidecar.get("args") or []
-    env_specs = sidecar.get("env") or []
-    epilog_txt = sidecar.get("epilog", "").strip()
-
+def _help_epilog(env_specs: tuple[CommandEnvSpec, ...], epilog_text: str) -> str | None:
     epilog_lines: list[str] = []
     if env_specs:
         epilog_lines.append("Environment variables:")
         for env_spec in env_specs:
-            line = f"  {env_spec['name']}"
-            if env_spec.get("help"):
-                line += f"  {env_spec['help']}"
-            if env_spec.get("default") is not None:
-                line += f"  [default: {env_spec['default']}]"
-            if env_spec.get("required"):
+            line = f"  {env_spec.name}"
+            if env_spec.help:
+                line += f"  {env_spec.help}"
+            if env_spec.default is not None:
+                line += f"  [default: {env_spec.default}]"
+            if env_spec.required:
                 line += "  [required]"
             epilog_lines.append(line)
-    if epilog_txt:
+    if epilog_text:
         if epilog_lines:
             epilog_lines.append("")
-        epilog_lines.append(epilog_txt)
-    epilog = "\n".join(epilog_lines) or None
+        epilog_lines.append(epilog_text)
+    return "\n".join(epilog_lines) or None
 
-    params: list = []
-    for arg in arg_specs:
-        arg_name = arg["name"]
-        is_positional = bool(arg.get("positional"))
-        is_flag = bool(arg.get("flag"))
-        is_multiple = bool(arg.get("multiple"))
-        is_variadic = bool(arg.get("variadic"))
-        required = arg.get("required", True if is_positional else False)
-        default = arg.get("default")
-        choices = arg.get("choices")
-        help_text = arg.get("help", "")
-        click_type = _click_type(arg.get("type", "string"))
 
-        if choices:
-            click_type = click.Choice([str(choice) for choice in choices])
-        if is_flag:
-            click_type = click.BOOL
+def _command_arg_spec(arg: dict) -> CommandArgSpec:
+    positional = bool(arg.get("positional"))
+    return CommandArgSpec(
+        name=arg["name"],
+        positional=positional,
+        flag=bool(arg.get("flag")),
+        multiple=bool(arg.get("multiple")),
+        variadic=bool(arg.get("variadic")),
+        required=arg.get("required", True if positional else False),
+        default=arg.get("default"),
+        choices=tuple(str(choice) for choice in (arg.get("choices") or [])),
+        help=arg.get("help", ""),
+        option=arg.get("option"),
+        type_name=arg.get("type", "string"),
+    )
 
-        if is_positional:
-            params.append(
-                click.Argument(
-                    [arg_name],
-                    required=required,
-                    type=click_type,
-                    nargs=-1 if is_variadic else 1,
-                )
-            )
-            continue
 
-        flag_name = arg.get("option") or f"--{arg_name.replace('_', '-')}"
-        if is_flag:
-            params.append(click.Option([flag_name], is_flag=True, default=False, help=help_text))
-            continue
-        params.append(
-            click.Option(
-                [flag_name],
-                required=required,
-                default=default,
-                type=click_type,
-                multiple=is_multiple,
-                help=help_text,
-                show_default=default is not None,
-            )
+def _command_env_spec(env_spec: dict) -> CommandEnvSpec:
+    return CommandEnvSpec(
+        name=env_spec["name"],
+        help=env_spec.get("help", ""),
+        default=env_spec.get("default"),
+        required=bool(env_spec.get("required")),
+    )
+
+
+def _command_spec(script_path: str, cmd_name: str, sidecar: dict) -> CommandSpec:
+    args = tuple(_command_arg_spec(arg) for arg in (sidecar.get("args") or []))
+    env = tuple(_command_env_spec(env_spec) for env_spec in (sidecar.get("env") or []))
+    return CommandSpec(
+        script_path=script_path,
+        command_name=cmd_name,
+        interpreter=tuple(_interpreter(script_path)),
+        description=sidecar.get("description", "").strip(),
+        args=args,
+        env=env,
+        epilog=sidecar.get("epilog", "").strip(),
+    )
+
+
+def _click_param(spec: CommandArgSpec):
+    click_type = _click_type(spec.type_name)
+    if spec.choices:
+        click_type = click.Choice(list(spec.choices))
+    if spec.flag:
+        click_type = click.BOOL
+
+    if spec.positional:
+        return click.Argument(
+            [spec.name],
+            required=spec.required,
+            type=click_type,
+            nargs=-1 if spec.variadic else 1,
         )
 
-    def make_callback(path: str, interp_: list[str], specs: list[dict]):
-        def callback(**kwargs):
-            # TODO(#7): Return subprocess exit codes instead of calling sys.exit from
-            # nested callbacks. This works for the current CLI-only model, but it
-            # makes embedding or reusing the dispatcher from Python awkward.
-            bash_exe = interp_[0] if interp_ else ""
-            exec_path = (
-                _to_bash_path(path, bash_exe)
-                if bash_exe == "bash" or bash_exe.endswith("bash.exe")
-                else path
-            )
-            cmd = list(interp_) + [exec_path]
-            for spec in specs:
-                arg_name = spec["name"]
-                value = kwargs[arg_name]
-                is_positional = bool(spec.get("positional"))
-                is_flag = bool(spec.get("flag"))
-                is_multiple = bool(spec.get("multiple"))
-                is_variadic = bool(spec.get("variadic"))
-                flag_name = spec.get("option") or f"--{arg_name.replace('_', '-')}"
+    flag_name = spec.option or f"--{spec.name.replace('_', '-')}"
+    if spec.flag:
+        return click.Option([flag_name], is_flag=True, default=False, help=spec.help)
+    return click.Option(
+        [flag_name],
+        required=spec.required,
+        default=spec.default,
+        type=click_type,
+        multiple=spec.multiple,
+        help=spec.help,
+        show_default=spec.default is not None,
+    )
 
-                if value is None or value == () or value is False:
-                    continue
-                if is_positional:
-                    if is_variadic:
-                        cmd.extend(str(item) for item in value)
-                    else:
-                        cmd.append(str(value))
-                elif is_flag:
-                    cmd.append(flag_name)
-                elif is_multiple:
-                    for item in value:
-                        cmd.extend([flag_name, str(item)])
+
+def _command_callback(spec: CommandSpec):
+    def callback(**kwargs):
+        # TODO(#7): Return subprocess exit codes instead of calling sys.exit from
+        # nested callbacks. This works for the current CLI-only model, but it
+        # makes embedding or reusing the dispatcher from Python awkward.
+        bash_exe = spec.interpreter[0] if spec.interpreter else ""
+        exec_path = (
+            _to_bash_path(spec.script_path, bash_exe)
+            if bash_exe == "bash" or bash_exe.endswith("bash.exe")
+            else spec.script_path
+        )
+        cmd = list(spec.interpreter) + [exec_path]
+        for arg_spec in spec.args:
+            value = kwargs[arg_spec.name]
+            flag_name = arg_spec.option or f"--{arg_spec.name.replace('_', '-')}"
+
+            if value is None or value == () or value is False:
+                continue
+            if arg_spec.positional:
+                if arg_spec.variadic:
+                    cmd.extend(str(item) for item in value)
                 else:
-                    cmd.extend([flag_name, str(value)])
+                    cmd.append(str(value))
+            elif arg_spec.flag:
+                cmd.append(flag_name)
+            elif arg_spec.multiple:
+                for item in value:
+                    cmd.extend([flag_name, str(item)])
+            else:
+                cmd.extend([flag_name, str(value)])
 
-            result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
-            sys.exit(result.returncode)
+        result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+        sys.exit(result.returncode)
 
-        return callback
+    return callback
+
+
+def _make_command(script_path: str, cmd_name: str, sidecar: dict) -> click.Command:
+    spec = _command_spec(script_path, cmd_name, sidecar)
 
     return click.Command(
-        name=cmd_name,
-        callback=make_callback(script_path, interp, arg_specs),
-        params=params,
-        help=desc,
-        epilog=epilog,
+        name=spec.command_name,
+        callback=_command_callback(spec),
+        params=[_click_param(arg_spec) for arg_spec in spec.args],
+        help=spec.description,
+        epilog=_help_epilog(spec.env, spec.epilog),
     )
 
 
