@@ -30,6 +30,7 @@ from toolrack.cli import (
     _generate_sidecar,
     _validate_sidecar,
     _load_aliases,
+    _make_command,
     _build_cli_tree,
     _read_cache,
     _write_cache,
@@ -933,6 +934,51 @@ class TestCommandTree:
         _register_in_tmp("github/check_review.py")
         (repo["scripts"] / "github" / "check_review.py").unlink()
         _reload_tree()  # no exception
+
+    def test_generated_command_callback_returns_subprocess_exit_code(
+            self, repo, make_script, make_sidecar, monkeypatch):
+        script_path = make_script("github/check_review.py")
+        sidecar = {
+            "description": "Check a review.",
+            "args": [{"name": "pr", "required": True, "type": "int"}],
+        }
+        make_sidecar("github/check_review.py", sidecar)
+        observed = {}
+
+        class FakeResult:
+            returncode = 7
+
+        def fake_run(cmd, stdin=None, stdout=None, stderr=None):
+            observed["cmd"] = cmd
+            observed["stdin"] = stdin
+            observed["stdout"] = stdout
+            observed["stderr"] = stderr
+            return FakeResult()
+
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        command = _make_command(script_path, "check-review", sidecar)
+
+        result = command.callback(pr=123)
+
+        assert result == 7
+        assert observed["cmd"][0] == os.fspath(cli.sys.executable)
+        assert observed["cmd"][1] == script_path
+        assert observed["cmd"][2:] == ["--pr", "123"]
+
+    def test_dynamic_command_still_exits_with_subprocess_status(
+            self, repo, runner, make_script, make_sidecar, monkeypatch):
+        make_script("github/check_review.py")
+        make_sidecar("github/check_review.py", {"description": "Check a review."})
+        _register_in_tmp("github/check_review.py")
+        _reload_tree()
+
+        class FakeResult:
+            returncode = 7
+
+        monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: FakeResult())
+        result = runner.invoke(cli.cli, ["github", "check-review"])
+
+        assert result.exit_code == 7
 
 
 class TestDeploymentConfig:
