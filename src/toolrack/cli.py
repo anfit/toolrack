@@ -524,7 +524,6 @@ def _click_param(spec: CommandArgSpec):
             type=click_type,
             nargs=-1 if spec.variadic else 1,
         )
-
     flag_name = spec.option or f"--{spec.name.replace('_', '-')}"
     if spec.flag:
         return click.Option([flag_name], is_flag=True, default=False, help=spec.help)
@@ -539,39 +538,42 @@ def _click_param(spec: CommandArgSpec):
     )
 
 
+def _run_dynamic_command(spec: CommandSpec, kwargs: dict) -> int:
+    """Execute a generated command and return the subprocess exit status."""
+    bash_exe = spec.interpreter[0] if spec.interpreter else ""
+    exec_path = (
+        _to_bash_path(spec.script_path, bash_exe)
+        if bash_exe == "bash" or bash_exe.endswith("bash.exe")
+        else spec.script_path
+    )
+    cmd = list(spec.interpreter) + [exec_path]
+    for arg_spec in spec.args:
+        value = kwargs[arg_spec.name]
+        flag_name = arg_spec.option or f"--{arg_spec.name.replace('_', '-')}"
+
+        if value is None or value == () or value is False:
+            continue
+        if arg_spec.positional:
+            if arg_spec.variadic:
+                for item in value:
+                    cmd.append(str(item))
+            else:
+                cmd.append(str(value))
+        elif arg_spec.flag:
+            cmd.append(flag_name)
+        elif arg_spec.multiple:
+            for item in value:
+                cmd.extend([flag_name, str(item)])
+        else:
+            cmd.extend([flag_name, str(value)])
+
+    result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
+    return result.returncode
+
+
 def _command_callback(spec: CommandSpec):
     def callback(**kwargs):
-        # TODO(#7): Return subprocess exit codes instead of calling sys.exit from
-        # nested callbacks. This works for the current CLI-only model, but it
-        # makes embedding or reusing the dispatcher from Python awkward.
-        bash_exe = spec.interpreter[0] if spec.interpreter else ""
-        exec_path = (
-            _to_bash_path(spec.script_path, bash_exe)
-            if bash_exe == "bash" or bash_exe.endswith("bash.exe")
-            else spec.script_path
-        )
-        cmd = list(spec.interpreter) + [exec_path]
-        for arg_spec in spec.args:
-            value = kwargs[arg_spec.name]
-            flag_name = arg_spec.option or f"--{arg_spec.name.replace('_', '-')}"
-
-            if value is None or value == () or value is False:
-                continue
-            if arg_spec.positional:
-                if arg_spec.variadic:
-                    cmd.extend(str(item) for item in value)
-                else:
-                    cmd.append(str(value))
-            elif arg_spec.flag:
-                cmd.append(flag_name)
-            elif arg_spec.multiple:
-                for item in value:
-                    cmd.extend([flag_name, str(item)])
-            else:
-                cmd.extend([flag_name, str(value)])
-
-        result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
-        sys.exit(result.returncode)
+        return _run_dynamic_command(spec, kwargs)
 
     return callback
 
@@ -786,6 +788,11 @@ def cli():
     """Typed dispatcher for a user-owned scripts repository."""
 
 
+@cli.result_callback()
+def _propagate_command_exit_status(result, **_kwargs):
+    if type(result) is int:
+        raise click.exceptions.Exit(result)
+    return result
 # TODO(#10): Avoid import-time CLI tree construction. It speeds up the "single file
 # script" model, but it also means import has side effects and front-loads work
 # even for commands that only need core maintenance operations.
