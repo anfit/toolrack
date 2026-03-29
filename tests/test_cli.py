@@ -131,6 +131,95 @@ class TestEnvPathNormalization:
         assert result == _sample_windows_path("example", "tools", "scripts")
 
 
+class TestShellAdapters:
+
+    def test_resolve_bash_exe_delegates_to_shell_adapter(self, monkeypatch):
+        class FakeAdapter(cli.ShellAdapter):
+            def resolve_bash_exe(self) -> str:
+                return "custom-bash"
+
+        monkeypatch.setattr(cli, "_shell_adapter", lambda: FakeAdapter())
+        assert cli._resolve_bash_exe() == "custom-bash"
+
+    def test_to_bash_path_delegates_to_shell_adapter(self, monkeypatch):
+        class FakeAdapter(cli.ShellAdapter):
+            def to_bash_path(self, script_path: str, bash_exe: str = "") -> str:
+                return f"translated:{script_path}:{bash_exe}"
+
+        monkeypatch.setattr(cli, "_shell_adapter", lambda: FakeAdapter())
+        assert cli._to_bash_path("C:\\repo\\script.sh", "bash.exe") == "translated:C:\\repo\\script.sh:bash.exe"
+
+    def test_run_dynamic_command_uses_adapter_for_bash_path_translation(self, monkeypatch):
+        observed = {}
+
+        class FakeAdapter(cli.ShellAdapter):
+            def should_translate_bash_script_path(self, bash_exe: str) -> bool:
+                return bash_exe == "bash"
+
+            def to_bash_path(self, script_path: str, bash_exe: str = "") -> str:
+                observed["translated_from"] = (script_path, bash_exe)
+                return "/translated/script.sh"
+
+        class FakeResult:
+            returncode = 0
+
+        def fake_run(cmd, stdin=None, stdout=None, stderr=None):
+            observed["cmd"] = cmd
+            return FakeResult()
+
+        monkeypatch.setattr(cli, "_shell_adapter", lambda: FakeAdapter())
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        spec = CommandSpec(
+            script_path=r"C:\repo\scripts\example.sh",
+            command_name="example",
+            interpreter=("bash",),
+            description="",
+            args=(),
+            env=(),
+            epilog="",
+        )
+
+        rc = cli._run_dynamic_command(spec, {})
+
+        assert rc == 0
+        assert observed["translated_from"] == (r"C:\repo\scripts\example.sh", "bash")
+        assert observed["cmd"] == ["bash", "/translated/script.sh"]
+
+    def test_run_dynamic_command_skips_translation_when_adapter_disables_it(self, monkeypatch):
+        observed = {}
+
+        class FakeAdapter(cli.ShellAdapter):
+            def should_translate_bash_script_path(self, bash_exe: str) -> bool:
+                return False
+
+            def to_bash_path(self, script_path: str, bash_exe: str = "") -> str:
+                raise AssertionError("should not be called")
+
+        class FakeResult:
+            returncode = 0
+
+        def fake_run(cmd, stdin=None, stdout=None, stderr=None):
+            observed["cmd"] = cmd
+            return FakeResult()
+
+        monkeypatch.setattr(cli, "_shell_adapter", lambda: FakeAdapter())
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        spec = CommandSpec(
+            script_path=r"C:\repo\scripts\example.sh",
+            command_name="example",
+            interpreter=("not-bash",),
+            description="",
+            args=(),
+            env=(),
+            epilog="",
+        )
+
+        rc = cli._run_dynamic_command(spec, {})
+
+        assert rc == 0
+        assert observed["cmd"] == ["not-bash", r"C:\repo\scripts\example.sh"]
+
+
 class TestRepoRootDiscovery:
 
     def test_find_repo_root_prefers_registry_marker(self, tmp_path, monkeypatch):
