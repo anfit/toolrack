@@ -965,6 +965,36 @@ class TestCommandTree:
         assert observed["cmd"][1] == script_path
         assert observed["cmd"][2:] == ["--pr", "123"]
 
+    def test_shell_command_enables_igncr_on_windows(
+            self, repo, make_script, make_sidecar, monkeypatch):
+        script_path = make_script("github/check_review.sh")
+        sidecar = {"description": "Check a review."}
+        make_sidecar("github/check_review.sh", sidecar)
+        observed = {}
+
+        class FakeResult:
+            returncode = 0
+
+        def fake_run(cmd, stdin=None, stdout=None, stderr=None):
+            observed["cmd"] = cmd
+            return FakeResult()
+
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(cli, "_is_windows", lambda: True)
+        monkeypatch.setattr(cli, "_resolve_bash_exe", lambda: "C:\\cygwin64\\bin\\bash.exe")
+        monkeypatch.setattr(cli, "_to_bash_path", lambda script_path, bash_exe: "/cygdrive/c/repo/script.sh")
+        command = _make_command(script_path, "check-review", sidecar)
+
+        result = command.callback()
+
+        assert result == 0
+        assert observed["cmd"][:4] == [
+            "C:\\cygwin64\\bin\\bash.exe",
+            "-O",
+            "igncr",
+            "/cygdrive/c/repo/script.sh",
+        ]
+
     def test_dynamic_command_still_exits_with_subprocess_status(
             self, repo, runner, make_script, make_sidecar, monkeypatch):
         make_script("github/check_review.py")

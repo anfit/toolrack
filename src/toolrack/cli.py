@@ -546,7 +546,13 @@ def _run_dynamic_command(spec: CommandSpec, kwargs: dict) -> int:
         if bash_exe == "bash" or bash_exe.endswith("bash.exe")
         else spec.script_path
     )
-    cmd = list(spec.interpreter) + [exec_path]
+    cmd = list(spec.interpreter)
+    if _is_windows() and cmd and (cmd[0] == "bash" or cmd[0].endswith("bash.exe")):
+        # CRLF-checked-out shell scripts fail in Cygwin with:
+        #   set: pipefail\r: invalid option name
+        # Allow Windows Bash variants to ignore carriage returns.
+        cmd.extend(["-O", "igncr"])
+    cmd.append(exec_path)
     for arg_spec in spec.args:
         value = kwargs[arg_spec.name]
         flag_name = arg_spec.option or f"--{arg_spec.name.replace('_', '-')}"
