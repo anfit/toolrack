@@ -7,6 +7,8 @@ and builds a typed Click CLI at runtime.
 If you want the starter repository that uses this engine, see
 [`toolrack-template`](https://github.com/anfit/toolrack-template).
 
+![Animated toolrack walkthrough: register, discover, and run scripts](docs/assets/toolrack-demo.gif)
+
 ## Why This Exists
 
 AI has made it dramatically easier to write small, useful scripts. That is the
