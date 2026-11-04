@@ -12,11 +12,14 @@ If you want the starter repository that uses this engine, see
 ## Quickstart
 
 ```sh
-git clone https://github.com/anfit/toolrack
 git clone https://github.com/anfit/toolrack-template my-tools
 cd my-tools
-python setup_toolrack.py --toolrack ../toolrack   # venv, wrappers, PATH, completion
+python setup_toolrack.py   # venv, installs toolrack-cli from PyPI, wrappers, PATH, completion
 ```
+
+The engine is published on PyPI as `toolrack-cli`; the command it installs is
+`toolrack`. To work on the engine itself, clone this repo and pass
+`--toolrack ../toolrack` to the setup script for an editable install.
 
 Open a new shell, then add a script and its sidecar:
 
