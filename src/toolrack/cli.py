@@ -3,12 +3,10 @@
 
 from __future__ import annotations
 
-import configparser
 import json
 import os
-import subprocess
 import sys
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import click
 
@@ -19,9 +17,6 @@ _is_windows = shells.is_windows
 CLI_NAME = runtime.cli_name()
 COMPLETION_VAR = runtime.completion_var(CLI_NAME)
 DEFAULT_REGISTRY_BASENAME = runtime.registry_basename()
-# TODO(#12): Move environment-derived settings into an explicit runtime config object.
-# Import-time globals make packaging harder, complicate tests, and will get in
-# the way once toolrack is used as an installed library as well as a checkout.
 
 
 
@@ -56,8 +51,9 @@ CACHE_FILE = _REPOSITORY.cache_file
 ALIASES_FILE = _REPOSITORY.aliases_file
 
 
-@dataclass(frozen=True)
-class CommandArgSpec:
+# Immutable records are NamedTuples, not dataclasses: importing `dataclasses`
+# (and `inspect` behind it) costs ~25 ms on every invocation, including --help.
+class CommandArgSpec(NamedTuple):
     name: str
     positional: bool
     flag: bool
@@ -71,16 +67,14 @@ class CommandArgSpec:
     type_name: str
 
 
-@dataclass(frozen=True)
-class CommandEnvSpec:
+class CommandEnvSpec(NamedTuple):
     name: str
     help: str
     default: object
     required: bool
 
 
-@dataclass(frozen=True)
-class CommandSpec:
+class CommandSpec(NamedTuple):
     script_path: str
     command_name: str
     interpreter: tuple[str, ...]
@@ -131,7 +125,6 @@ def _abs_script_path(registry_entry: str, repo: RepositoryContext | None = None)
     return runtime.abs_script_path(registry_entry, repo or _current_repo())
 
 
-# TODO(#3): Promote cached entry payloads to typed models instead of raw dicts.
 # The JSON contract (signature + entries) lives in toolrack.runtime so the
 # completion fast path validates the cache exactly as the CLI does.
 def _cache_signature(registry: list[str], repo: RepositoryContext | None = None) -> str:
@@ -160,12 +153,11 @@ def _write_cache(
 
 def _load_aliases(repo: RepositoryContext | None = None) -> dict[str, str]:
     repo = repo or _current_repo()
-    cfg = configparser.ConfigParser()
-    # TODO(#4): Merge registry/cache/aliases metadata into one top-level repo
-    # manifest object. These files are now conceptually related, but the code
-    # still treats them as separate incidental globals.
     if not os.path.isfile(repo.aliases_file):
         return {}
+    import configparser  # only repositories with an aliases.cfg pay for it
+
+    cfg = configparser.ConfigParser()
     cfg.read(repo.aliases_file)
     if not cfg.has_section("groups"):
         return {}
@@ -332,6 +324,8 @@ def _run_dynamic_command(spec: CommandSpec, kwargs: dict) -> int:
         else:
             cmd.extend([flag_name, str(value)])
 
+    import subprocess  # imported on use: --help and core commands never need it
+
     result = subprocess.run(cmd, stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr)
     return result.returncode
 
@@ -381,9 +375,6 @@ def _discover_cli_entries(
     registry: list[str], aliases: dict[str, str], repo: RepositoryContext | None = None
 ) -> list[dict]:
     repo = repo or _current_repo()
-    # TODO(#8): This should become a pure discovery phase that reports structured
-    # diagnostics instead of printing via Click while traversing the repo.
-    # Mixing discovery, validation, and user I/O makes caching and reuse clumsy.
     discovered: list[dict] = []
 
     for entry in registry:
@@ -446,9 +437,6 @@ def _refresh_cache(repo: RepositoryContext | None = None) -> None:
 
 
 def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
-    # TODO(#9): Build a declarative command tree first, then render it into Click.
-    # Right now the tree is mutated directly on the global Click group, which is
-    # serviceable for one process but awkward for caching and introspection.
     groups: dict[tuple[str, ...], click.Group] = {}
 
     def get_or_create_group(name_parts: list[str]) -> click.Group:
@@ -463,7 +451,7 @@ def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
                 if _to_cli_name(alias) == name:
                     folder = original
                     break
-            group = click.Group(name=name, help=f"Commands from scripts/{folder}/")
+            group = SuggestingGroup(name=name, help=f"Commands from scripts/{folder}/")
             cli.add_command(group)
 
             for original, alias in aliases.items():
@@ -489,7 +477,7 @@ def _build_cli_tree(entries: list[dict], aliases: dict[str, str]) -> None:
             if _to_cli_name(alias) == name:
                 folder = original
                 break
-        group = click.Group(name=name, help=f"Commands from scripts/{'/'.join(name_parts)}/")
+        group = SuggestingGroup(name=name, help=f"Commands from scripts/{'/'.join(name_parts)}/")
         parent.add_command(group)
         groups[key] = group
         return group
@@ -536,7 +524,35 @@ def _ensure_cli_tree() -> None:
     _DYNAMIC_CLI_SIGNATURE = signature
 
 
-class RuntimeCLIGroup(click.Group):
+class SuggestingGroup(click.Group):
+    """A group that says "Did you mean ...?" for an unknown command name."""
+
+    def resolve_command(self, ctx: click.Context, args: list[str]):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError as exc:
+            suggestion = self._suggestion(ctx, args[0]) if args else ""
+            if suggestion and str(exc.message).startswith("No such command"):
+                exc.message = f"{exc.message} {suggestion}"
+            raise
+
+    def _suggestion(self, ctx: click.Context, name: str) -> str:
+        import difflib  # error path only: no cost on a normal run
+
+        visible = [
+            command_name
+            for command_name in self.list_commands(ctx)
+            if not getattr(self.commands.get(command_name), "hidden", False)
+        ]
+        matches = difflib.get_close_matches(name, visible, n=3, cutoff=0.6)
+        if not matches:
+            return ""
+        if len(matches) == 1:
+            return f"Did you mean '{matches[0]}'?"
+        return "Did you mean one of: " + ", ".join(f"'{m}'" for m in matches) + "?"
+
+
+class RuntimeCLIGroup(SuggestingGroup):
     def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
         if cmd_name not in self.commands:
             _ensure_cli_tree()
@@ -558,12 +574,9 @@ def _propagate_command_exit_status(result, **_kwargs):
     if type(result) is int:
         raise click.exceptions.Exit(result)
     return result
-# TODO(#10): Avoid import-time CLI tree construction. It speeds up the "single file
-# script" model, but it also means import has side effects and front-loads work
-# even for commands that only need core maintenance operations.
 
 
-@cli.group("core")
+@cli.group("core", cls=SuggestingGroup)
 def core():
     """Registry management and shell-completion commands."""
 
@@ -733,8 +746,7 @@ def cmd_reregister():
     click.echo(f"\n{ok} ok, {errors} errors.")
 
 
-@dataclass(frozen=True)
-class Diagnostic:
+class Diagnostic(NamedTuple):
     level: str  # "error" or "warning"
     subject: str
     message: str
@@ -1041,9 +1053,6 @@ def install_completion(shell: str):
     # user's Bash installation when merely printing the completion script.
     source = ShellComplete.source(comp).replace("\r\n", "\n").replace("\r", "\n")
     if shell == "bash":
-        # TODO(#11): Stop patching upstream Click output with string replacement.
-        # This is pragmatic for now, but a custom completion emitter would be
-        # more explicit and less brittle than editing generated shell text.
         source = source.replace("$(env ", "$(")
         source = _bypass_wrapper_in_bash_completion(source)
     elif shell == "zsh":

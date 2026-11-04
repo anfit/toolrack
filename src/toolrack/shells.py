@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 
 
 def is_windows() -> bool:
@@ -11,11 +10,9 @@ def is_windows() -> bool:
 
 
 def to_bash_path(windows_path: str, bash_exe: str = "") -> str:
-    # TODO(#5): Isolate shell/path translation behind a shell adapter layer.
-    # Windows, Git Bash, and Cygwin compatibility logic is mixed into the core
-    # dispatcher, which makes the module harder to reason about than it should be.
     if not is_windows():
         return windows_path
+    import subprocess  # only needed when translating paths on Windows
 
     cygpath_candidates: list[str] = []
     if bash_exe:

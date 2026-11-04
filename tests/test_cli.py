@@ -955,7 +955,9 @@ class TestCommandTree:
             observed["stderr"] = stderr
             return FakeResult()
 
-        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+        import subprocess
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
         command = _make_command(script_path, "check-review", sidecar)
 
         result = command.callback(pr=123)
@@ -975,7 +977,9 @@ class TestCommandTree:
         class FakeResult:
             returncode = 7
 
-        monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: FakeResult())
+        import subprocess
+
+        monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: FakeResult())
         result = runner.invoke(cli.cli, ["github", "check-review"])
 
         assert result.exit_code == 7
