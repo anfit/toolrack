@@ -54,6 +54,19 @@ CORE_COMMANDS: dict[str, dict] = {
         "args": [{"name": "script_path", "positional": True, "required": True}],
     },
     "reregister": {"description": "Re-validate all registered commands."},
+    "init": {
+        "description": "Create a minimal scripts repository (never overwrites existing files).",
+        "args": [
+            {"name": "path", "positional": True},
+            {
+                "name": "no_example",
+                "flag": True,
+                "option": "--no-example",
+                "help": "Do not create the example script.",
+            },
+        ],
+    },
+    "doctor": {"description": "Diagnose the toolrack installation and repository setup."},
     "validate": {
         "description": "Check registry, sidecars and aliases without changing anything (for CI).",
         "args": [

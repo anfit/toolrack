@@ -196,6 +196,13 @@ Defaults:
 - `core refresh-cache`: rebuild the cached command metadata next to `.toolrack`
 - `core list`: show registry entries and sidecar status
 - `core install-completion <shell>`: print shell completion source
+- `core validate [--strict]`: read-only repository check for CI (see [Testing Your Tools](#testing-your-tools))
+- `core init [path] [--no-example]`: create a minimal scripts repository; never overwrites existing files
+- `core doctor`: diagnose the installation and setup (legacy `toolrack` install shadowing `toolrack-cli`,
+  missing `bash` or `psql` for registered scripts, command not on `PATH`, validation errors); exits 1 on failures
+
+Starting without the template: `pip install toolrack-cli`, then
+`python -m toolrack core init my-tools` and `cd my-tools`.
 
 ## Scripts Repo Contract
 
@@ -228,8 +235,11 @@ For a starter repository layout, use
 
 Completion is answered from `.toolrack.cache.json` without importing Click, so
 <TAB> stays fast; anything the fast path does not model exactly falls back to
-Click. `core install-completion bash` prints a script that calls the Python
+Click. `core install-completion <shell>` prints a script that calls the Python
 interpreter directly and falls back to the wrapper if that interpreter moves.
+This applies to bash, zsh and fish; the zsh and fish scripts are covered by
+string-level tests only, not exercised in a real zsh or fish, so report any
+problems.
 
 ## Development
 

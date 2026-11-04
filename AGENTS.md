@@ -10,6 +10,10 @@ Generic CLI dispatcher engine. Installed into a scripts repo; provides the `tool
 src/toolrack/
   entrypoint.py ← process entry point: completion fast path, else the Click CLI
   completion.py ← click-free shell completion answered from the metadata cache
+  sidecar.py    ← sidecar load/generate/validate (cli.py keeps aliases for compatibility)
+  shells.py     ← Windows/Git Bash/Cygwin path and bash resolution
+  scaffold.py   ← `core init` repository scaffolding
+  doctor.py     ← `core doctor` checks (pure functions, injected inputs)
   testing.py    ← ToolrackRepo: public helpers that drive the real CLI in a subprocess
   pytest_plugin.py ← pytest11 fixtures for users' tests (toolrack_repo, toolrack_project, ...)
   runtime.py    ← click-free repo discovery, registry reading, cache validation

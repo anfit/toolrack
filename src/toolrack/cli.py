@@ -849,6 +849,46 @@ def cmd_validate(strict: bool):
         raise click.exceptions.Exit(1)
 
 
+@core.command("init")
+@click.argument("path", default=".", required=False)
+@click.option("--no-example", is_flag=True, help="Do not create the example script.")
+def cmd_init(path: str, no_example: bool):
+    """Create a minimal scripts repository (never overwrites existing files)."""
+    from toolrack import scaffold
+
+    root = os.path.abspath(path)
+    try:
+        results = scaffold.scaffold_repository(root, example=not no_example)
+    except OSError as exc:
+        raise click.ClickException(str(exc))
+    for rel, status in results:
+        click.echo(f"  {status.upper():<8} {rel}")
+    repo = scaffold.repository_context(root)
+    _refresh_cache(repo)
+    click.echo(
+        f"\nRepository ready at {root}\n"
+        f"Next: cd there, then run `python -m toolrack --help`"
+        + ("" if no_example else " and `python -m toolrack example hello --name you`")
+        + ".\nAdd a script plus a .yml sidecar under scripts/, then `core auto-register`."
+    )
+
+
+@core.command("doctor")
+def cmd_doctor():
+    """Diagnose the toolrack installation and repository setup."""
+    from toolrack import doctor
+
+    checks = doctor.run_checks(_current_repo(), CLI_NAME, _check_repository)
+    for check in checks:
+        tag = {"ok": "ok  ", "warn": "WARN", "fail": "FAIL"}[check.level]
+        click.echo(f"  [{tag}] {check.name}: {check.detail}", err=check.level != "ok")
+    failed = sum(1 for c in checks if c.level == doctor.FAIL)
+    warned = sum(1 for c in checks if c.level == doctor.WARN)
+    click.echo(f"\n{len(checks) - failed - warned} ok, {warned} warnings, {failed} failures.")
+    if failed:
+        raise click.exceptions.Exit(1)
+
+
 @core.command("refresh-cache")
 def cmd_refresh_cache():
     """Rebuild the command metadata cache next to the registry."""
