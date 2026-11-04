@@ -116,17 +116,17 @@ class TestResolvePath:
 class TestEnvPathNormalization:
 
     def test_returns_input_unchanged_off_windows(self, monkeypatch):
-        monkeypatch.setattr(cli, "_is_windows", lambda: False)
+        monkeypatch.setattr(cli.runtime, "is_windows", lambda: False)
         sample = "/cygdrive/c/example/tools/.toolrack"
         assert _normalize_env_path(sample) == sample
 
     def test_converts_cygwin_drive_path_on_windows(self, monkeypatch):
-        monkeypatch.setattr(cli, "_is_windows", lambda: True)
+        monkeypatch.setattr(cli.runtime, "is_windows", lambda: True)
         result = _normalize_env_path("/cygdrive/c/example/tools/.toolrack")
         assert result == _sample_windows_path("example", "tools", ".toolrack")
 
     def test_converts_git_bash_drive_path_on_windows(self, monkeypatch):
-        monkeypatch.setattr(cli, "_is_windows", lambda: True)
+        monkeypatch.setattr(cli.runtime, "is_windows", lambda: True)
         result = _normalize_env_path("/c/example/tools/scripts")
         assert result == _sample_windows_path("example", "tools", "scripts")
 
@@ -1014,6 +1014,51 @@ class TestDeploymentConfig:
         assert result.exit_code == 0
         assert "$(env " not in result.output
         assert "$(_MY_TOOLS_COMPLETE" not in result.output or "_MY_TOOLS_COMPLETE" in result.output
+
+    def _bash_completion_source(self, repo, runner, monkeypatch, python="/venv/python"):
+        monkeypatch.setattr(cli, "CLI_NAME", "my-tools")
+        monkeypatch.setattr(cli, "COMPLETION_VAR", "_MY_TOOLS_COMPLETE")
+        monkeypatch.setattr(cli, "_resolve_bash_exe", lambda: "bash")
+        monkeypatch.setattr(cli, "_to_bash_path", lambda path, _bash: python)
+        result = runner.invoke(cli.cli, ["core", "install-completion", "bash"])
+        assert result.exit_code == 0
+        return result.output
+
+    def test_install_completion_bash_calls_interpreter_directly(self, repo, runner, monkeypatch):
+        source = self._bash_completion_source(repo, runner, monkeypatch)
+
+        response_line = next(
+            line for line in source.splitlines() if line.strip().startswith("response=$(")
+        )
+        assert '_my_tools_completion_direct "$1")' in response_line
+        assert "/venv/python -m toolrack" in source
+        assert "TOOLRACK_REPO_ROOT=" in source
+        assert "TOOLRACK_CLI_NAME=my-tools" in source
+
+    def test_install_completion_bash_falls_back_to_wrapper(self, repo, runner, monkeypatch, tmp_path):
+        import shutil
+        import subprocess
+
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash not available")
+        source = self._bash_completion_source(
+            repo, runner, monkeypatch, python=(tmp_path / "missing-python").as_posix()
+        )
+        stub = tmp_path / "stub-wrapper"
+        stub.write_text("#!/bin/sh\necho used-wrapper\n", encoding="utf-8")
+        stub.chmod(0o755)
+        script = tmp_path / "completion.bash"
+        script.write_text(source, encoding="utf-8", newline="\n")
+
+        result = subprocess.run(
+            [bash, "-c", f'source "{script.as_posix()}"; _my_tools_completion_direct "{stub.as_posix()}"'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.stdout.strip() == "used-wrapper"
 
     def test_completion_returns_choice_values_for_typed_option(
             self, repo, make_script, make_sidecar, monkeypatch):

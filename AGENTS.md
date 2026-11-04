@@ -1,6 +1,6 @@
 # AGENTS.md — toolrack
 
-Generic CLI dispatcher engine. Installed into a scripts repo; provides the `attic` command (or any name configured in `[project.scripts]`).
+Generic CLI dispatcher engine. Installed into a scripts repo; provides the `toolrack` command (or any name set through the wrapper's `TOOLRACK_CLI_NAME`).
 
 ---
 
@@ -8,12 +8,15 @@ Generic CLI dispatcher engine. Installed into a scripts repo; provides the `atti
 
 ```
 src/toolrack/
-  cli.py        ← entire engine
-  __init__.py
+  entrypoint.py ← process entry point: completion fast path, else the Click CLI
+  completion.py ← click-free shell completion answered from the metadata cache
+  runtime.py    ← click-free repo discovery, registry reading, cache validation
+  cli.py        ← the Click engine (commands, sidecars, dynamic tree)
   __main__.py   ← python -m toolrack entry point
 tests/
   conftest.py         ← repo fixture (monkeypatches REPO_ROOT etc.)
   test_cli.py         ← unit tests for the engine
+  test_completion.py  ← fast-path vs Click parity tests
   test_cross_shell.py ← @pytest.mark.integration — skipped by default
 SIDECAR_SPEC.md       ← canonical sidecar format spec
 pyproject.toml
@@ -25,9 +28,23 @@ pyproject.toml
 
 | Name | Default value |
 |---|---|
-| `REPO_ROOT` | `TOOLRACK_REPO_ROOT` env var, or walk-up from cwd to find `.attic`/`.git` |
+| `REPO_ROOT` | `TOOLRACK_REPO_ROOT` env var, or walk-up from cwd to find `.toolrack` (legacy `.attic`) or `.git` |
 | `SCRIPTS_ROOT` | `TOOLRACK_SCRIPTS_ROOT` env var, or `REPO_ROOT/scripts` |
-| `REGISTRY_FILE` | `REPO_ROOT/.attic` |
+| `REGISTRY_FILE` | `TOOLRACK_REGISTRY_FILE` env var, or `REPO_ROOT/.toolrack` |
+
+All of these are resolved by `runtime.resolve_repository()`; `cli.py` only snapshots the result.
+
+---
+
+## Shell completion fast path
+
+Every <TAB> press runs `python -m toolrack`. `entrypoint.main()` first calls `completion.try_fast_completion()`, which answers from `.toolrack.cache.json` using only the standard library (no Click, no PyYAML). Rules when touching it:
+
+- Keep `runtime.py` and `completion.py` free of `click`/`yaml` imports (a test enforces it) and avoid heavy stdlib imports (`dataclasses`, `inspect`) — each costs milliseconds per keypress.
+- The fast path must never guess. If it does not model a request exactly (unknown token, `--help`, a stale/missing cache, hidden alias groups), it returns `None` and Click answers.
+- `tests/test_completion.py` compares the fast path with Click byte for byte for bash, zsh and fish. A new sidecar feature or core command needs a case there, and `completion.CORE_COMMANDS` must mirror the real `core` group (a test checks it).
+- Cache validation is shared (`runtime.read_cache`); never re-implement it.
+- `core install-completion bash` emits a helper that runs `python -m toolrack` directly instead of the wrapper, with a fallback to the wrapper if the baked interpreter path no longer exists.
 
 ---
 
@@ -37,7 +54,7 @@ pyproject.toml
 |---|---|---|
 | `_find_repo_root()` | `str` | Walk-up from cwd; fallback to cwd at filesystem root |
 | `_read_registry()` | `list[str]` | Skips blanks and `#` comments |
-| `_write_registry(paths)` | — | Overwrites `.attic` |
+| `_write_registry(paths)` | — | Overwrites `.toolrack` |
 | `_resolve_script_path(raw)` | `str` | Any input → repo-relative, forward slashes |
 | `_abs_script_path(entry)` | `str` | Registry entry → absolute path |
 | `_load_sidecar(abs_path)` | `dict\|None` | `None` if absent; raises on malformed YAML |
@@ -72,7 +89,7 @@ pytest -m integration -s            # cross-shell integration tests
 
 ### Test isolation
 
-`conftest.py` provides a `repo` fixture that monkeypatches `toolrack.cli.REPO_ROOT`, `SCRIPTS_ROOT`, and `REGISTRY_FILE` to `tmp_path`. Tests never touch the real `.attic`.
+`conftest.py` provides a `repo` fixture that monkeypatches `toolrack.cli.REPO_ROOT`, `SCRIPTS_ROOT`, and `REGISTRY_FILE` to `tmp_path`. Tests never touch the real `.toolrack`.
 
 ---
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import configparser
 import json
-import ntpath
 import os
 import subprocess
 import sys
@@ -13,19 +12,12 @@ from dataclasses import dataclass
 
 import click
 
+from toolrack import __version__, runtime
+from toolrack.runtime import RepositoryContext
 
-def _default_cli_name() -> str:
-    prog = os.path.basename(sys.argv[0] or "").strip()
-    if prog:
-        prog = os.path.splitext(prog)[0]
-        if prog not in {"", "__main__", "-m"}:
-            return prog
-    return "toolrack"
-
-
-CLI_NAME = os.environ.get("TOOLRACK_CLI_NAME") or _default_cli_name()
-COMPLETION_VAR = "_" + CLI_NAME.replace("-", "_").upper() + "_COMPLETE"
-DEFAULT_REGISTRY_BASENAME = os.environ.get("TOOLRACK_REGISTRY_BASENAME") or ".toolrack"
+CLI_NAME = runtime.cli_name()
+COMPLETION_VAR = runtime.completion_var(CLI_NAME)
+DEFAULT_REGISTRY_BASENAME = runtime.registry_basename()
 # TODO(#12): Move environment-derived settings into an explicit runtime config object.
 # Import-time globals make packaging harder, complicate tests, and will get in
 # the way once toolrack is used as an installed library as well as a checkout.
@@ -54,74 +46,16 @@ def _fix_windows_completion_crlf() -> None:
 _fix_windows_completion_crlf()
 
 
-def _registry_candidates() -> list[str]:
-    candidates = [
-        os.environ.get("TOOLRACK_REGISTRY_FILE"),
-        DEFAULT_REGISTRY_BASENAME,
-        ".attic",
-    ]
-    return [candidate for candidate in candidates if candidate]
+_find_repo_root = runtime.find_repo_root
+_normalize_env_path = runtime.normalize_env_path
+_file_state = runtime.file_state
 
-
-def _normalize_env_path(value: str | None) -> str | None:
-    """Map Git Bash / Cygwin Windows mount paths back to native Windows paths."""
-    if not value or not _is_windows():
-        return value
-
-    normalized = value.replace("\\", "/")
-    if normalized.startswith("/cygdrive/") and len(normalized) > len("/cygdrive/x/"):
-        drive = normalized[len("/cygdrive/")]
-        remainder = normalized[len("/cygdrive/x") :]
-        return ntpath.normpath(f"{drive.upper()}:{remainder}")
-
-    if normalized.startswith("/") and len(normalized) > 3 and normalized[2] == "/":
-        drive = normalized[1]
-        if drive.isalpha():
-            remainder = normalized[2:]
-            return ntpath.normpath(f"{drive.upper()}:{remainder}")
-
-    return value
-
-
-def _find_repo_root() -> str:
-    """Walk up from cwd until we find the registry file or .git."""
-    here = os.path.abspath(os.getcwd())
-    candidate = here
-    while True:
-        for registry_name in _registry_candidates():
-            if os.path.isabs(registry_name):
-                continue
-            if os.path.isfile(os.path.join(candidate, registry_name)):
-                return candidate
-        if os.path.isdir(os.path.join(candidate, ".git")):
-            return candidate
-        parent = os.path.dirname(candidate)
-        if parent == candidate:
-            return here
-        candidate = parent
-
-
-REPO_ROOT = _normalize_env_path(os.environ.get("TOOLRACK_REPO_ROOT")) or _find_repo_root()
-SCRIPTS_ROOT = _normalize_env_path(os.environ.get("TOOLRACK_SCRIPTS_ROOT")) or os.path.join(
-    REPO_ROOT, "scripts"
-)
-REGISTRY_FILE = (
-    _normalize_env_path(os.environ.get("TOOLRACK_REGISTRY_FILE"))
-    or os.path.join(REPO_ROOT, DEFAULT_REGISTRY_BASENAME)
-)
-CACHE_FILE = _normalize_env_path(os.environ.get("TOOLRACK_CACHE_FILE")) or (REGISTRY_FILE + ".cache.json")
-ALIASES_FILE = _normalize_env_path(os.environ.get("TOOLRACK_ALIASES_FILE")) or os.path.join(
-    REPO_ROOT, "aliases.cfg"
-)
-
-
-@dataclass(frozen=True)
-class RepositoryContext:
-    repo_root: str
-    scripts_root: str
-    registry_file: str
-    cache_file: str
-    aliases_file: str
+_REPOSITORY = runtime.resolve_repository()
+REPO_ROOT = _REPOSITORY.repo_root
+SCRIPTS_ROOT = _REPOSITORY.scripts_root
+REGISTRY_FILE = _REPOSITORY.registry_file
+CACHE_FILE = _REPOSITORY.cache_file
+ALIASES_FILE = _REPOSITORY.aliases_file
 
 
 @dataclass(frozen=True)
@@ -172,15 +106,7 @@ _RUNNABLE_EXTS = {".py", ".sh", ".bash", ".sql"}
 
 
 def _read_registry(repo: RepositoryContext | None = None) -> list[str]:
-    repo = repo or _current_repo()
-    if not os.path.isfile(repo.registry_file):
-        return []
-    with open(repo.registry_file, encoding="utf-8") as handle:
-        return [
-            line.strip()
-            for line in handle
-            if line.strip() and not line.strip().startswith("#")
-        ]
+    return runtime.read_registry(repo or _current_repo())
 
 
 def _write_registry(paths: list[str], repo: RepositoryContext | None = None) -> None:
@@ -204,58 +130,18 @@ def _resolve_script_path(raw: str, repo: RepositoryContext | None = None) -> str
 
 
 def _abs_script_path(registry_entry: str, repo: RepositoryContext | None = None) -> str:
-    repo = repo or _current_repo()
-    return os.path.normpath(os.path.join(repo.repo_root, registry_entry))
+    return runtime.abs_script_path(registry_entry, repo or _current_repo())
 
 
-def _file_state(path: str) -> dict[str, int | bool]:
-    try:
-        stat = os.stat(path)
-    except FileNotFoundError:
-        return {"exists": False, "size": 0, "mtime_ns": 0}
-    return {"exists": True, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
-
-
+# TODO(#3): Promote cached entry payloads to typed models instead of raw dicts.
+# The JSON contract (signature + entries) lives in toolrack.runtime so the
+# completion fast path validates the cache exactly as the CLI does.
 def _cache_signature(registry: list[str], repo: RepositoryContext | None = None) -> str:
-    repo = repo or _current_repo()
-    # TODO(#3): Promote cached entry payloads to typed models instead of raw dicts.
-    # The current JSON contract is convenient but fragile: field names are
-    # unchecked, easy to drift, and spread across multiple helpers.
-    payload = {
-        "repo_root": repo.repo_root,
-        "scripts_root": repo.scripts_root,
-        "registry_file": repo.registry_file,
-        "aliases_file": repo.aliases_file,
-        "registry": registry,
-        "registry_state": _file_state(repo.registry_file),
-        "aliases_state": _file_state(repo.aliases_file),
-        "entries": [
-            {
-                "registry_entry": entry,
-                "script_state": _file_state(_abs_script_path(entry, repo)),
-                "sidecar_state": _file_state(_sidecar_path(_abs_script_path(entry, repo))),
-            }
-            for entry in registry
-        ],
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return runtime.cache_signature(registry, repo or _current_repo())
 
 
 def _read_cache(registry: list[str], repo: RepositoryContext | None = None) -> list[dict] | None:
-    repo = repo or _current_repo()
-    if not os.path.isfile(repo.cache_file):
-        return None
-    try:
-        with open(repo.cache_file, encoding="utf-8") as handle:
-            payload = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if payload.get("signature") != _cache_signature(registry, repo):
-        return None
-    entries = payload.get("entries")
-    if not isinstance(entries, list):
-        return None
-    return entries
+    return runtime.read_cache(registry, repo or _current_repo())
 
 
 def _write_cache(
@@ -298,8 +184,7 @@ def _load_aliases(repo: RepositoryContext | None = None) -> dict[str, str]:
     return aliases
 
 
-def _sidecar_path(script_path: str) -> str:
-    return os.path.splitext(script_path)[0] + ".yml"
+_sidecar_path = runtime.sidecar_path
 
 
 def _generate_sidecar(script_path: str) -> dict:
@@ -783,7 +668,7 @@ class RuntimeCLIGroup(click.Group):
 
 
 @click.group(cls=RuntimeCLIGroup)
-@click.version_option(prog_name=CLI_NAME)
+@click.version_option(version=__version__, prog_name=CLI_NAME)
 def cli():
     """Typed dispatcher for a user-owned scripts repository."""
 
@@ -992,6 +877,46 @@ def cmd_list():
         click.echo(f"  [{status}]  {entry}{sidecar_tag}")
 
 
+def _bypass_wrapper_in_bash_completion(source: str) -> str:
+    """Make Bash completion call this interpreter directly instead of the wrapper.
+
+    Click's script runs ``$1`` (the wrapper on PATH) for every <TAB>; on Windows
+    that starts a whole extra bash process. The generated helper runs
+    ``python -m toolrack`` with the same environment the wrapper would export,
+    and falls back to ``$1`` if that interpreter no longer exists (venv moved or
+    recreated), so a stale script degrades to the old behaviour, not to nothing.
+    """
+    import shlex
+
+    call = " $1)"
+    if call not in source:
+        return source
+
+    repo = _current_repo()
+    python = _to_bash_path(sys.executable, _resolve_bash_exe())
+    env = {
+        "TOOLRACK_CLI_NAME": CLI_NAME,
+        "TOOLRACK_REPO_ROOT": repo.repo_root,
+        "TOOLRACK_SCRIPTS_ROOT": repo.scripts_root,
+        "TOOLRACK_REGISTRY_FILE": repo.registry_file,
+        "TOOLRACK_CACHE_FILE": repo.cache_file,
+        "TOOLRACK_ALIASES_FILE": repo.aliases_file,
+    }
+    assignments = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    ident = "".join(ch if ch.isalnum() else "_" for ch in CLI_NAME)
+    helper = f"_{ident}_completion_direct"
+    definition = (
+        f"{helper}() {{\n"
+        f"    if [ -x {shlex.quote(python)} ]; then\n"
+        f"        {assignments} {shlex.quote(python)} -m toolrack\n"
+        f"    else\n"
+        f'        "$1"\n'
+        f"    fi\n"
+        f"}}\n\n"
+    )
+    return definition + source.replace(call, f' {helper} "$1")', 1)
+
+
 @core.command("install-completion")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]), default="bash")
 def install_completion(shell: str):
@@ -1008,6 +933,7 @@ def install_completion(shell: str):
         # This is pragmatic for now, but a custom completion emitter would be
         # more explicit and less brittle than editing generated shell text.
         source = source.replace("$(env ", "$(")
+        source = _bypass_wrapper_in_bash_completion(source)
     sys.stdout.write(source)
     sys.stdout.flush()
 

@@ -1,15 +1,35 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "toolrack"
-version = "0.1.0"
+name = "toolrack"  # NOTE: taken on PyPI by an unrelated project; rename before publishing.
+dynamic = ["version"]
+description = "Turn a folder of small scripts plus YAML sidecars into one typed, completable CLI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jan Chimiak" }]
+keywords = ["cli", "scripts", "click", "dispatcher", "shell-completion"]
 requires-python = ">=3.11"
 dependencies = [
     "click>=8.1",
     "pyyaml>=6.0",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Repository = "https://github.com/anfit/toolrack"
+Template = "https://github.com/anfit/toolrack-template"
 
 [project.optional-dependencies]
 dev = [
@@ -17,7 +37,10 @@ dev = [
 ]
 
 [project.scripts]
-toolrack = "toolrack.cli:main"
+toolrack = "toolrack.entrypoint:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "toolrack.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]

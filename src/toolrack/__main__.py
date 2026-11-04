@@ -1,4 +1,4 @@
 """Entry point for `python -m toolrack`."""
-from toolrack.cli import main
+from toolrack.entrypoint import main
 
 main()

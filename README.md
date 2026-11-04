@@ -9,6 +9,39 @@ If you want the starter repository that uses this engine, see
 
 ![Animated toolrack walkthrough: register, discover, and run scripts](docs/assets/toolrack-demo.gif)
 
+## Quickstart
+
+```sh
+git clone https://github.com/anfit/toolrack
+git clone https://github.com/anfit/toolrack-template my-tools
+cd my-tools
+python setup_toolrack.py --toolrack ../toolrack   # venv, wrappers, PATH, completion
+```
+
+Open a new shell, then add a script and its sidecar:
+
+```python
+# scripts/hello/greet.py
+import sys
+print(f"Hello, {sys.argv[1]}!")
+```
+
+```yaml
+# scripts/hello/greet.yml
+description: Print a greeting.
+args:
+  - name: name
+    positional: true
+    required: true
+    help: Who to greet.
+```
+
+```sh
+my-tools core register scripts/hello/greet.py
+my-tools hello greet Alice        # -> Hello, Alice!
+my-tools hello <TAB>              # completes commands, options and choices
+```
+
 ## Why This Exists
 
 AI has made it dramatically easier to write small, useful scripts. That is the
@@ -118,10 +151,17 @@ refactoring = refactor
 That turns `your-tools environments get-status` into `your-tools env get-status`.
 
 Sidecars live next to scripts as `<script>.yml`. See
-[SIDECAR_SPEC.md](/C:/projects/toolrack/SIDECAR_SPEC.md).
+[SIDECAR_SPEC.md](SIDECAR_SPEC.md).
 
 For a starter repository layout, use
 [`toolrack-template`](https://github.com/anfit/toolrack-template).
+
+## Shell completion
+
+Completion is answered from `.toolrack.cache.json` without importing Click, so
+<TAB> stays fast; anything the fast path does not model exactly falls back to
+Click. `core install-completion bash` prints a script that calls the Python
+interpreter directly and falls back to the wrapper if that interpreter moves.
 
 ## Development
 
