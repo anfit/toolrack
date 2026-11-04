@@ -873,6 +873,92 @@ def cmd_list():
         click.echo(f"  [{status}]  {entry}{sidecar_tag}")
 
 
+def _direct_completion_target() -> tuple[str, dict[str, str]]:
+    """Interpreter and environment the wrapper would use, for direct completion."""
+    repo = _current_repo()
+    python = _to_bash_path(sys.executable, _resolve_bash_exe())
+    env = {
+        "TOOLRACK_CLI_NAME": CLI_NAME,
+        "TOOLRACK_REPO_ROOT": repo.repo_root,
+        "TOOLRACK_SCRIPTS_ROOT": repo.scripts_root,
+        "TOOLRACK_REGISTRY_FILE": repo.registry_file,
+        "TOOLRACK_CACHE_FILE": repo.cache_file,
+        "TOOLRACK_ALIASES_FILE": repo.aliases_file,
+    }
+    return python, env
+
+
+def _direct_completion_helper_name() -> str:
+    ident = "".join(ch if ch.isalnum() else "_" for ch in CLI_NAME)
+    return f"_{ident}_completion_direct"
+
+
+def _bypass_wrapper_in_zsh_completion(source: str) -> str:
+    """Zsh counterpart of the Bash bypass; same fallback to the wrapper.
+
+    Only rewrites the exact invocation Click emits and otherwise returns the
+    script unchanged, so an unexpected Click version degrades to the old path.
+    """
+    import shlex
+
+    call = (
+        f'env COMP_WORDS="${{words[*]}}" COMP_CWORD=$((CURRENT-1)) '
+        f"{COMPLETION_VAR}=zsh_complete {CLI_NAME}"
+    )
+    if call not in source:
+        return source
+
+    python, env = _direct_completion_target()
+    assignments = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    helper = _direct_completion_helper_name()
+    prefix = f'env COMP_WORDS="$1" COMP_CWORD="$2" {COMPLETION_VAR}=zsh_complete'
+    definition = (
+        f"{helper}() {{\n"
+        f"    if [ -x {shlex.quote(python)} ]; then\n"
+        f"        {prefix} {assignments} {shlex.quote(python)} -m toolrack\n"
+        f"    else\n"
+        f"        {prefix} {shlex.quote(CLI_NAME)}\n"
+        f"    fi\n"
+        f"}}\n\n"
+    )
+    source = source.replace(call, f'{helper} "${{words[*]}}" $((CURRENT-1))', 1)
+    # `#compdef` must stay the first line of the file.
+    if source.startswith("#compdef"):
+        first, _, rest = source.partition("\n")
+        return f"{first}\n\n{definition}{rest}"
+    return definition + source
+
+
+def _bypass_wrapper_in_fish_completion(source: str) -> str:
+    """Fish counterpart of the Bash bypass; same fallback to the wrapper."""
+    call = (
+        f"env {COMPLETION_VAR}=fish_complete COMP_WORDS=(commandline -cp) "
+        f"COMP_CWORD=(commandline -t) {CLI_NAME}"
+    )
+    if call not in source:
+        return source
+
+    python, env = _direct_completion_target()
+    # Single-quoted fish strings cannot represent an embedded apostrophe
+    # portably; leave the script alone rather than emit a broken one.
+    if any("'" in value for value in (python, *env.values())):
+        return source
+    assignments = " ".join(f"{name}='{value}'" for name, value in env.items())
+    helper = _direct_completion_helper_name()
+    prefix = f'env COMP_WORDS="$argv[1]" COMP_CWORD="$argv[2]" {COMPLETION_VAR}=fish_complete'
+    definition = (
+        f"function {helper}\n"
+        f"    if test -x '{python}'\n"
+        f"        {prefix} {assignments} '{python}' -m toolrack\n"
+        f"    else\n"
+        f"        {prefix} {CLI_NAME}\n"
+        f"    end\n"
+        f"end\n\n"
+    )
+    source = source.replace(call, f"{helper} (commandline -cp) (commandline -t)", 1)
+    return definition + source
+
+
 def _bypass_wrapper_in_bash_completion(source: str) -> str:
     """Make Bash completion call this interpreter directly instead of the wrapper.
 
@@ -888,19 +974,9 @@ def _bypass_wrapper_in_bash_completion(source: str) -> str:
     if call not in source:
         return source
 
-    repo = _current_repo()
-    python = _to_bash_path(sys.executable, _resolve_bash_exe())
-    env = {
-        "TOOLRACK_CLI_NAME": CLI_NAME,
-        "TOOLRACK_REPO_ROOT": repo.repo_root,
-        "TOOLRACK_SCRIPTS_ROOT": repo.scripts_root,
-        "TOOLRACK_REGISTRY_FILE": repo.registry_file,
-        "TOOLRACK_CACHE_FILE": repo.cache_file,
-        "TOOLRACK_ALIASES_FILE": repo.aliases_file,
-    }
+    python, env = _direct_completion_target()
     assignments = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
-    ident = "".join(ch if ch.isalnum() else "_" for ch in CLI_NAME)
-    helper = f"_{ident}_completion_direct"
+    helper = _direct_completion_helper_name()
     definition = (
         f"{helper}() {{\n"
         f"    if [ -x {shlex.quote(python)} ]; then\n"
@@ -930,6 +1006,10 @@ def install_completion(shell: str):
         # more explicit and less brittle than editing generated shell text.
         source = source.replace("$(env ", "$(")
         source = _bypass_wrapper_in_bash_completion(source)
+    elif shell == "zsh":
+        source = _bypass_wrapper_in_zsh_completion(source)
+    elif shell == "fish":
+        source = _bypass_wrapper_in_fish_completion(source)
     sys.stdout.write(source)
     sys.stdout.flush()
 

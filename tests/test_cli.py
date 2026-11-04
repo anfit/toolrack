@@ -1060,6 +1060,83 @@ class TestDeploymentConfig:
 
         assert result.stdout.strip() == "used-wrapper"
 
+    def _completion_source(self, shell, runner, monkeypatch, python="/venv/python"):
+        monkeypatch.setattr(cli, "CLI_NAME", "my-tools")
+        monkeypatch.setattr(cli, "COMPLETION_VAR", "_MY_TOOLS_COMPLETE")
+        monkeypatch.setattr(cli, "_resolve_bash_exe", lambda: "bash")
+        monkeypatch.setattr(cli, "_to_bash_path", lambda path, _bash: python)
+        result = runner.invoke(cli.cli, ["core", "install-completion", shell])
+        assert result.exit_code == 0
+        return result.output
+
+    def test_install_completion_zsh_calls_interpreter_directly(self, repo, runner, monkeypatch):
+        source = self._completion_source("zsh", runner, monkeypatch)
+
+        assert source.startswith("#compdef my-tools\n")
+        assert "env COMP_WORDS" not in source.split("_my_tools_completion_direct() {", 1)[0]
+        assert 'response=("${(@f)$(_my_tools_completion_direct "${words[*]}" $((CURRENT-1)))}")' in source
+        assert "/venv/python -m toolrack" in source
+        assert "TOOLRACK_CLI_NAME=my-tools" in source
+
+    def test_install_completion_fish_calls_interpreter_directly(self, repo, runner, monkeypatch):
+        source = self._completion_source("fish", runner, monkeypatch)
+
+        assert "set -l response (_my_tools_completion_direct (commandline -cp) (commandline -t));" in source
+        assert "function _my_tools_completion_direct" in source
+        assert "test -x '/venv/python'" in source
+        assert "'/venv/python' -m toolrack" in source
+        assert "TOOLRACK_CLI_NAME='my-tools'" in source
+
+    def test_install_completion_fish_skips_bypass_for_apostrophe_paths(self, repo, runner, monkeypatch):
+        source = self._completion_source("fish", runner, monkeypatch, python="/it's/python")
+        assert "_completion_direct" not in source
+        assert "env _MY_TOOLS_COMPLETE=fish_complete" in source
+
+    def test_zsh_bypass_leaves_unrecognised_scripts_alone(self):
+        assert cli._bypass_wrapper_in_zsh_completion("something else\n") == "something else\n"
+        assert cli._bypass_wrapper_in_fish_completion("something else\n") == "something else\n"
+
+    @pytest.mark.parametrize("use_python", [True, False])
+    def test_zsh_helper_runs_python_or_falls_back_to_wrapper(
+        self, repo, runner, monkeypatch, tmp_path, use_python
+    ):
+        import shutil
+        import subprocess
+
+        from toolrack.testing import bash_available
+
+        if shutil.which("bash") is None or not bash_available():
+            pytest.skip("bash not available")
+        fake_python = tmp_path / "python"
+        fake_python.write_text(
+            "#!/bin/sh\necho direct:$COMP_WORDS:$COMP_CWORD:$TOOLRACK_CLI_NAME\n", encoding="utf-8", newline="\n"
+        )
+        fake_python.chmod(0o755)
+        wrapper_dir = tmp_path / "wrapper"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "my-tools"
+        wrapper.write_text(
+            "#!/bin/sh\necho wrapper:$COMP_WORDS:$COMP_CWORD:$_MY_TOOLS_COMPLETE\n", encoding="utf-8", newline="\n"
+        )
+        wrapper.chmod(0o755)
+        python = fake_python.as_posix() if use_python else (tmp_path / "missing").as_posix()
+        source = self._completion_source("zsh", runner, monkeypatch, python=python)
+        start = source.index("_my_tools_completion_direct() {")
+        helper = source[start : source.index("\n}\n", start) + 3]
+        script = tmp_path / "helper.sh"
+        script.write_text(helper, encoding="utf-8", newline="\n")
+
+        done = subprocess.run(
+            # cygpath: on Windows Git Bash a "C:/..." entry would be split at the colon.
+            [shutil.which("bash"), "-c",
+             f'd="{wrapper_dir.as_posix()}"; PATH="$(cygpath -u "$d" 2>/dev/null || echo "$d"):$PATH"; '
+             f'. "{script.as_posix()}"; _my_tools_completion_direct "my-tools co" 1'],
+            capture_output=True, text=True, check=False,
+        )
+
+        expected = "direct:my-tools co:1:my-tools" if use_python else "wrapper:my-tools co:1:zsh_complete"
+        assert done.stdout.strip() == expected, done.stderr
+
     def test_completion_returns_choice_values_for_typed_option(
             self, repo, make_script, make_sidecar, monkeypatch):
         from click.shell_completion import BashComplete
