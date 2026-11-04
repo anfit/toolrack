@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "toolrack"  # NOTE: taken on PyPI by an unrelated project; rename before publishing.
+name = "toolrack-cli"  # PyPI distribution name; the import package and command remain "toolrack".
 dynamic = ["version"]
 description = "Turn a folder of small scripts plus YAML sidecars into one typed, completable CLI"
 readme = "README.md"
