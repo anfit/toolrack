@@ -231,6 +231,18 @@ Sidecars live next to scripts as `<script>.yml`. See
 For a starter repository layout, use
 [`toolrack-template`](https://github.com/anfit/toolrack-template).
 
+## Fast `--help`
+
+`--help` and `--version` are also answered from the cache without importing
+Click (about 95 ms instead of 190 ms, close to Python's own startup time). The
+output is identical to Click's; help it cannot reproduce exactly (very long
+descriptions that wrap, `env` or `epilog` sections, non-ASCII text, `core`
+subcommands) is rendered by Click as before. Set `TOOLRACK_NO_FAST_HELP=1` to
+bypass the fast path, for example when debugging a sidecar.
+
+Mistyped commands get a suggestion: `my exmaple` prints
+`No such command 'exmaple'. Did you mean 'example'?`.
+
 ## Shell completion
 
 Completion is answered from `.toolrack.cache.json` without importing Click, so

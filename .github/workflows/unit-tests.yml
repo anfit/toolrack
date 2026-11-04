@@ -15,6 +15,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.14"]
+        click-spec: [""]
+        include:
+          # Oldest supported Click: the completion and --help fast paths must
+          # match its output byte for byte too.
+          - os: ubuntu-latest
+            python-version: "3.11"
+            click-spec: "click==8.1.8"
+          - os: windows-latest
+            python-version: "3.11"
+            click-spec: "click==8.1.8"
 
     steps:
       - name: Check out repository
@@ -27,7 +37,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]" ${{ matrix.click-spec }}
 
       - name: Run unit tests
         run: python -m pytest

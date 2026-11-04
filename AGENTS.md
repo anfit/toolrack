@@ -10,6 +10,7 @@ Generic CLI dispatcher engine. Installed into a scripts repo; provides the `tool
 src/toolrack/
   entrypoint.py ← process entry point: completion fast path, else the Click CLI
   completion.py ← click-free shell completion answered from the metadata cache
+  helpfast.py   ← click-free `--help` / `--version` rendered from the cache (parity with Click)
   sidecar.py    ← sidecar load/generate/validate (cli.py keeps aliases for compatibility)
   shells.py     ← Windows/Git Bash/Cygwin path and bash resolution
   scaffold.py   ← `core init` repository scaffolding
@@ -49,6 +50,7 @@ Every <TAB> press runs `python -m toolrack`. `entrypoint.main()` first calls `co
 - Keep `runtime.py` and `completion.py` free of `click`/`yaml` imports (a test enforces it) and avoid heavy stdlib imports (`dataclasses`, `inspect`) — each costs milliseconds per keypress.
 - The fast path must never guess. If it does not model a request exactly (unknown token, `--help`, a stale/missing cache, hidden alias groups), it returns `None` and Click answers.
 - `tests/test_completion.py` compares the fast path with Click byte for byte for bash, zsh and fish. A new sidecar feature or core command needs a case there, and `completion.CORE_COMMANDS` must mirror the real `core` group (a test checks it).
+- `helpfast.py` follows the same rules (no `click`/`yaml`, never guess, shared cache validation). It serves only help it can reproduce exactly and raises `_Unsupported` (→ Click answers) for anything that would wrap, epilogs/env sections, non-ASCII text, `core` subcommands, etc. `tests/test_helpfast.py` compares it with Click at several terminal widths; CI also runs it against the oldest supported Click (8.1.x), and `pyproject.toml` caps Click below the next untested minor. A new sidecar feature that changes help layout needs a case in `COMMANDS` there. `TOOLRACK_NO_FAST_HELP=1` disables it for debugging.
 - `testing.py` / `pytest_plugin.py` are public API for people testing their own scripts: keep them stable, subprocess-based (no monkeypatching engine globals), and covering `.py`, `.sh`/`.bash` and `.sql`. `tests/test_testing.py` is their contract; `core validate` (`_check_repository`) is tested in `tests/test_validate.py`.
 - Cache validation is shared (`runtime.read_cache`); never re-implement it.
 - `core install-completion bash` emits a helper that runs `python -m toolrack` directly instead of the wrapper, with a fallback to the wrapper if the baked interpreter path no longer exists.

@@ -13,7 +13,9 @@ authors = [{ name = "Jan Chimiak" }]
 keywords = ["cli", "scripts", "click", "dispatcher", "shell-completion"]
 requires-python = ">=3.11"
 dependencies = [
-    "click>=8.1",
+    # Upper bound: the completion and --help fast paths reproduce Click's output
+    # byte for byte, so a new Click minor is adopted only after the parity tests pass.
+    "click>=8.1,<8.4",
     "pyyaml>=6.0",
 ]
 classifiers = [
