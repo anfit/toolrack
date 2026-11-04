@@ -104,6 +104,53 @@ Which also makes the AI prompt much nicer:
 
 > Hey AI, make me one like this, but mauve.
 
+## Testing Your Tools
+
+Installing `toolrack-cli` also gives your test suite a pytest plugin. It runs the
+real CLI in a subprocess against a repository, so tests cover what users run:
+sidecar parsing, argument mapping, exit codes and the script itself. Python,
+Bash and SQL scripts are all supported.
+
+**Check the whole repo in CI.** `core validate` is read-only and exits non-zero
+on a missing script or sidecar, an invalid sidecar, a bad `aliases.cfg`, or two
+scripts that map to the same command. Unregistered sidecar pairs and a stale
+cache are warnings; `--strict` makes them failures.
+
+```sh
+my core validate --strict
+```
+
+**Or from pytest**, against your real repo (`toolrack_project`) or a throwaway
+one (`toolrack_repo`):
+
+```python
+def test_repo_is_valid(toolrack_project):
+    toolrack_project.validate(strict=True)   # AssertionError lists every problem
+
+def test_python_tool(toolrack_repo):
+    toolrack_repo.add_script(
+        "greet/hello.py",
+        "import sys\nprint('hi', sys.argv[2])\n",
+        {"description": "Say hi.", "args": [{"name": "name", "required": True}]},
+    )
+    assert toolrack_repo.run("greet", "hello", "--name", "Ada").check().stdout == "hi Ada\n"
+
+def test_bash_tool(toolrack_repo, toolrack_require_bash):      # skips without bash
+    toolrack_repo.add_script("ops/fail.sh", "exit 3\n", {"description": "Fails."})
+    assert toolrack_repo.run("ops", "fail").returncode == 3
+
+def test_sql_tool(toolrack_repo, toolrack_require_posix):      # no database needed
+    psql = toolrack_repo.stub_executable("psql", record_env=("PGDATABASE",))
+    script = toolrack_repo.add_script("db/ping.sql", "SELECT 1;", {"description": "Ping."})
+    toolrack_repo.run("db", "ping", env={"PGDATABASE": "dev"}).check()
+    assert psql.calls()[0]["argv"] == ["-f", str(script)]
+```
+
+SQL scripts run as `psql -f <file>`, so `stub_executable` puts a recording fake
+`psql` first on `PATH` instead of needing a database. It works on POSIX hosts
+only. `ToolrackRepo` is in `toolrack.testing` if you prefer to use it without
+the fixtures.
+
 ## Migrating From a Checked-Out toolrack
 
 If you installed the engine editable from a clone (`pip install -e path/to/toolrack`,

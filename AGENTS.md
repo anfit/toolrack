@@ -10,6 +10,8 @@ Generic CLI dispatcher engine. Installed into a scripts repo; provides the `tool
 src/toolrack/
   entrypoint.py ← process entry point: completion fast path, else the Click CLI
   completion.py ← click-free shell completion answered from the metadata cache
+  testing.py    ← ToolrackRepo: public helpers that drive the real CLI in a subprocess
+  pytest_plugin.py ← pytest11 fixtures for users' tests (toolrack_repo, toolrack_project, ...)
   runtime.py    ← click-free repo discovery, registry reading, cache validation
   cli.py        ← the Click engine (commands, sidecars, dynamic tree)
   __main__.py   ← python -m toolrack entry point
@@ -43,6 +45,7 @@ Every <TAB> press runs `python -m toolrack`. `entrypoint.main()` first calls `co
 - Keep `runtime.py` and `completion.py` free of `click`/`yaml` imports (a test enforces it) and avoid heavy stdlib imports (`dataclasses`, `inspect`) — each costs milliseconds per keypress.
 - The fast path must never guess. If it does not model a request exactly (unknown token, `--help`, a stale/missing cache, hidden alias groups), it returns `None` and Click answers.
 - `tests/test_completion.py` compares the fast path with Click byte for byte for bash, zsh and fish. A new sidecar feature or core command needs a case there, and `completion.CORE_COMMANDS` must mirror the real `core` group (a test checks it).
+- `testing.py` / `pytest_plugin.py` are public API for people testing their own scripts: keep them stable, subprocess-based (no monkeypatching engine globals), and covering `.py`, `.sh`/`.bash` and `.sql`. `tests/test_testing.py` is their contract; `core validate` (`_check_repository`) is tested in `tests/test_validate.py`.
 - Cache validation is shared (`runtime.read_cache`); never re-implement it.
 - `core install-completion bash` emits a helper that runs `python -m toolrack` directly instead of the wrapper, with a fallback to the wrapper if the baked interpreter path no longer exists.
 

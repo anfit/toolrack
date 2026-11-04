@@ -54,6 +54,17 @@ CORE_COMMANDS: dict[str, dict] = {
         "args": [{"name": "script_path", "positional": True, "required": True}],
     },
     "reregister": {"description": "Re-validate all registered commands."},
+    "validate": {
+        "description": "Check registry, sidecars and aliases without changing anything (for CI).",
+        "args": [
+            {
+                "name": "strict",
+                "flag": True,
+                "option": "--strict",
+                "help": "Treat warnings as errors.",
+            }
+        ],
+    },
     "refresh-cache": {"description": "Rebuild the command metadata cache next to the registry."},
     "list": {"description": "List all registered scripts."},
     "install-completion": {

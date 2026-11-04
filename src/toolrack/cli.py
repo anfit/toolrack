@@ -853,6 +853,122 @@ def cmd_reregister():
     click.echo(f"\n{ok} ok, {errors} errors.")
 
 
+@dataclass(frozen=True)
+class Diagnostic:
+    level: str  # "error" or "warning"
+    subject: str
+    message: str
+
+
+def _check_repository(repo: RepositoryContext) -> tuple[list[str], list[Diagnostic]]:
+    """Inspect the whole repository without writing anything.
+
+    Returns the registry entries that are fully valid and the diagnostics for
+    everything else. Unlike discovery at runtime (which skips broken entries
+    with a warning), this reports every problem so CI can fail on it.
+    """
+    import yaml
+
+    diagnostics: list[Diagnostic] = []
+    ok: list[str] = []
+    registry = _read_registry(repo)
+
+    try:
+        aliases = _load_aliases(repo)
+    except RuntimeError as exc:
+        diagnostics.append(Diagnostic("error", os.path.basename(repo.aliases_file), str(exc)))
+        aliases = {}
+
+    claimed: dict[tuple[str, ...], str] = {}
+    for entry in registry:
+        abs_path = _abs_script_path(entry, repo)
+        if not os.path.isfile(abs_path):
+            diagnostics.append(Diagnostic("error", entry, "registered script not found"))
+            continue
+        ext = os.path.splitext(abs_path)[1].lower()
+        if ext not in _RUNNABLE_EXTS:
+            diagnostics.append(Diagnostic("error", entry, f"unsupported extension '{ext}'"))
+            continue
+        try:
+            sidecar = _load_sidecar(abs_path)
+            if sidecar is None:
+                diagnostics.append(
+                    Diagnostic("error", entry, f"sidecar missing (run: {CLI_NAME} core register {entry})")
+                )
+                continue
+            _validate_sidecar(sidecar, abs_path)
+            group_parts, cmd_name, _ = _group_path_and_cmd(entry, aliases, repo)
+            _command_spec(abs_path, cmd_name, sidecar)
+        except (RuntimeError, ValueError, yaml.YAMLError) as exc:
+            diagnostics.append(Diagnostic("error", entry, str(exc)))
+            continue
+
+        key = (*group_parts, cmd_name)
+        if key in claimed:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    entry,
+                    f"command '{' '.join(key)}' is already provided by {claimed[key]}",
+                )
+            )
+            continue
+        claimed[key] = entry
+        ok.append(entry)
+
+    registered = set(registry)
+    for dirpath, dirnames, filenames in os.walk(repo.scripts_root):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in _SKIP_DIRS and not name.startswith(".")
+        )
+        for filename in sorted(filenames):
+            if not filename.endswith(".yml"):
+                continue
+            stem = os.path.join(dirpath, os.path.splitext(filename)[0])
+            for script_ext in sorted(_RUNNABLE_EXTS):
+                if os.path.isfile(stem + script_ext):
+                    canonical = _resolve_script_path(stem + script_ext, repo)
+                    if canonical not in registered:
+                        diagnostics.append(
+                            Diagnostic(
+                                "warning",
+                                canonical,
+                                f"has a sidecar but is not registered (run: {CLI_NAME} core auto-register)",
+                            )
+                        )
+                    break
+
+    if registry and _read_cache(registry, repo) is None:
+        diagnostics.append(
+            Diagnostic(
+                "warning",
+                os.path.basename(repo.cache_file),
+                f"cache is missing or stale (run: {CLI_NAME} core refresh-cache)",
+            )
+        )
+    return ok, diagnostics
+
+
+@core.command("validate")
+@click.option("--strict", is_flag=True, help="Treat warnings as errors.")
+def cmd_validate(strict: bool):
+    """Check registry, sidecars and aliases without changing anything (for CI)."""
+    ok, diagnostics = _check_repository(_current_repo())
+    for entry in ok:
+        click.echo(f"  OK       {entry}")
+    errors = warnings = 0
+    for item in diagnostics:
+        if item.level == "error":
+            errors += 1
+            click.echo(f"  ERROR    {item.subject}: {item.message}", err=True)
+        else:
+            warnings += 1
+            click.echo(f"  WARNING  {item.subject}: {item.message}", err=True)
+    click.echo(f"\n{len(ok)} ok, {errors} errors, {warnings} warnings.")
+    if errors or (strict and warnings):
+        raise click.exceptions.Exit(1)
+
+
 @core.command("refresh-cache")
 def cmd_refresh_cache():
     """Rebuild the command metadata cache next to the registry."""

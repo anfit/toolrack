@@ -39,6 +39,10 @@ dev = [
 [project.scripts]
 toolrack = "toolrack.entrypoint:main"
 
+# Fixtures for testing your own scripts repo; inert unless a test requests them.
+[project.entry-points.pytest11]
+toolrack = "toolrack.pytest_plugin"
+
 [tool.setuptools.dynamic]
 version = { attr = "toolrack.__version__" }
 
