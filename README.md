@@ -104,6 +104,20 @@ Which also makes the AI prompt much nicer:
 
 > Hey AI, make me one like this, but mauve.
 
+## Migrating From a Checked-Out toolrack
+
+If you installed the engine editable from a clone (`pip install -e path/to/toolrack`,
+distribution name `toolrack`), switch your scripts repo to the PyPI release:
+
+```sh
+python3 ./sync_toolrack.py                              # refresh setup_toolrack.py
+python3 ./setup_toolrack.py --yes --force --cli-name <your-command>
+```
+
+Setup removes the old editable install, installs `toolrack-cli`, rewrites the
+wrappers, and regenerates completion. Full steps, plus the manual route, are in
+the [toolrack-template README](https://github.com/anfit/toolrack-template#migrating-from-a-checked-out-toolrack).
+
 ## Deployment Model
 
 `toolrack` is meant to be installed into a scripts repository's virtualenv
