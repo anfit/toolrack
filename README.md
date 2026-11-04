@@ -7,6 +7,9 @@ and builds a typed Click CLI at runtime.
 If you want the starter repository that uses this engine, see
 [`toolrack-template`](https://github.com/anfit/toolrack-template).
 
+[![PyPI](https://img.shields.io/pypi/v/toolrack-cli)](https://pypi.org/project/toolrack-cli/)
+[![Unit tests](https://github.com/anfit/toolrack/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/anfit/toolrack/actions/workflows/unit-tests.yml)
+
 ![Animated toolrack walkthrough: register, discover, and run scripts](docs/assets/toolrack-demo.gif)
 
 ## Quickstart
@@ -103,8 +106,9 @@ Which also makes the AI prompt much nicer:
 
 ## Deployment Model
 
-`toolrack` is meant to be installed into a scripts repository and launched
-through a repo-local wrapper in `bin/`.
+`toolrack` is meant to be installed into a scripts repository's virtualenv
+(`pip install toolrack-cli`) and launched through a repo-local wrapper in `bin/`.
+The PyPI distribution is `toolrack-cli`; the package and command are `toolrack`.
 
 The wrapper is responsible for:
 
