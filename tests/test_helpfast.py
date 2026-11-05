@@ -207,6 +207,9 @@ def test_process_output_is_identical_with_and_without_fast_path(tree, repo):
         "TOOLRACK_SCRIPTS_ROOT": str(repo["scripts"]),
         "TOOLRACK_REGISTRY_FILE": str(repo["registry"]),
         "COLUMNS": "80",
+        # The tree includes a non-ASCII description, which Click (not the fast path)
+        # prints; a legacy console codepage on the CI runner cannot encode it.
+        "PYTHONIOENCODING": "utf-8",
     }
 
     def run(extra, *args):
