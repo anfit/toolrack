@@ -185,6 +185,21 @@ Defaults:
 - registry basename: `.toolrack`
 - repo discovery also accepts legacy `.attic` during walk-up
 
+## Security Model
+
+`toolrack` runs the scripts a repository registers, with your privileges and
+environment. Treat a scripts repository like any code you execute:
+
+- Only run `toolrack` (or its wrapper) inside repositories you trust. Invoking a
+  command in a cloned, unreviewed repository executes that repository's scripts.
+- Registry entries in `.toolrack` are not confined to the repository: a path
+  such as `../x.sh` or an absolute path is run as written. Review registry
+  changes in pull requests.
+- Argument values are passed to scripts verbatim; scripts must validate their
+  own input.
+- `.toolrack.cache.json` is a machine-local cache containing absolute paths.
+  Keep it out of version control (`core init` adds it to `.gitignore`).
+
 ## Core Commands
 
 `toolrack` provides a small management surface under `core`:
